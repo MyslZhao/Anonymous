@@ -258,7 +258,7 @@ def _build_food_safety(seed: int, severity: int, options: ScenarioOptions) -> Si
         trapped_label="待救治",
         zones=zones,
         edges=edges,
-        resources={"medical_kits": 8, "volunteers": 30, "buses": 2, "boats": 0, "barricades": 4},
+        resources={"medical_kits": 6, "volunteers": 30, "buses": 2, "boats": 0, "barricades": 4},
     )
 
 
