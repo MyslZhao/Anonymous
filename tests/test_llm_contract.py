@@ -1,0 +1,47 @@
+"""模型输出的契约层测试：解析容错、角色纠偏、区域/道路填反的拦截。"""
+
+import pytest
+
+from app.agents.llm import AgentError, extract_json, parse_proposal, shape_issue
+from app.data.scenarios import build_scenario
+from app.models import Proposal
+
+
+def test_extract_json_tolerates_code_fence_and_noise():
+    raw = '好的，分析如下：\n```json\n{"agent":"medical","action":"idle"}\n```\n以上。'
+    assert extract_json(raw)["agent"] == "medical"
+
+
+def test_extract_json_rejects_garbage():
+    with pytest.raises(AgentError):
+        extract_json("我觉得应该先救人")
+
+
+def test_parse_proposal_forces_role_from_caller():
+    raw = '{"agent":"security","action":"idle","priority":"low"}'
+    proposal = parse_proposal(raw, "medical")
+    assert proposal.agent == "medical"
+
+
+def test_shape_issue_flags_zone_used_as_road():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    proposal = Proposal(agent="security", priority="high", target_area="dorm_a", action="close_road")
+    issue = shape_issue(state, proposal)
+    assert issue and "道路名称" in issue
+
+
+def test_shape_issue_flags_road_used_as_zone():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    proposal = Proposal(agent="traffic", priority="high", target_area="教学路", action="evacuate")
+    issue = shape_issue(state, proposal)
+    assert issue and "区域 id" in issue
+
+
+@pytest.mark.parametrize(
+    "action,target",
+    [("close_road", "2号道路"), ("evacuate", "dorm_a"), ("send_medical_team", "clinic"), ("notify_students", "gate")],
+)
+def test_shape_issue_accepts_valid_targets(action, target):
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    proposal = Proposal(agent="medical", priority="medium", target_area=target, action=action)
+    assert shape_issue(state, proposal) is None

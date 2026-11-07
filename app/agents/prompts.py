@@ -8,7 +8,7 @@ ACTION_SCHEMA = """你必须只输出一个 JSON 对象，不要输出任何解�
 {
   "agent": "<你的角色 id>",
   "priority": "high" | "medium" | "low",
-  "target_area": "<区域 id>",
+  "target_area": "<区域 id 或道路名>",
   "action": "send_medical_team" | "close_road" | "evacuate" | "dispatch_supply" | "open_route" | "notify_students" | "idle",
   "resource_required": {
     "medical_kits": 0, "volunteers": 0, "buses": 0, "boats": 0, "barricades": 0
@@ -17,14 +17,17 @@ ACTION_SCHEMA = """你必须只输出一个 JSON 对象，不要输出任何解�
 }
 区域 id 只能取：gate(校门及道路), teaching(教学楼), dorm_a(学生宿舍A), dorm_b(学生宿舍B),
 canteen(食堂), library(图书馆), clinic(医务室), gym(体育馆)。
-道路类行动(close_road / open_route)的 target_area 填道路名称，可用：主干道、2号道路、东环路、教学路、
-食堂路、医务路、北区路、宿舍环线、图书馆路、南环路、医务支路。"""
+道路类行动(close_road / open_route)的 target_area 必须填【道路名称】，可用：主干道、2号道路、东环路、
+教学路、食堂路、医务路、北区路、宿舍环线、图书馆路、南环路、医务支路。填区域 id 会被直接驳回。"""
 
 COMMON_RULES = """严格要求：
 1. 只提出你职责范围内、且当前资源条件下可能执行的行动，不要虚构不存在的设施。
-2. 申请的资源必须来自快照中的可用库存，总量不得超过库存。
+2. 申请的资源必须来自快照中的可用库存，总量不得超过库存。单次行动的常见量级：
+   volunteers 不超过 10，medical_kits 不超过 6，buses 不超过库存，barricades 不超过 4。
 3. 只做一次行动提议，不要罗列多个备选。
-4. 输出必须是合法 JSON。"""
+4. 道路状态以快照为准：**已阻断的道路不要再申请 close_road**（会被驳回）；open_route 必须针对已阻断道路。
+5. 优先处理【本轮分工】指定的重点区域；只有在该区域已无处置必要时，才改选其他区域。
+6. 输出必须是合法 JSON。"""
 
 SYSTEM_PROMPTS: dict[str, str] = {
     "command": (
@@ -55,7 +58,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
 }
 
 
-def build_user_message(state: SimState) -> str:
+def build_user_message(state: SimState, focus: str | None = None) -> str:
     """把当前校园快照渲染成提示词（结构化、可读、不含隐私数据）。"""
     hazard_label = state.event.get("hazard_label", "危险度")
     trapped_label = state.event.get("trapped_label", "被困")
@@ -70,6 +73,8 @@ def build_user_message(state: SimState) -> str:
             f"- {zone['id']} {zone['name']}：{hazard_label} {zone['hazard']}，"
             f"在区人数 {zone['population']}，{trapped_label} {zone['trapped']}，医疗需求 {zone['medical_need']}"
         )
+    if focus:
+        lines += ["", f"【本轮分工】你的重点区域是 {focus}。若提出道路管控，优先考虑通往该区域的道路。"]
     lines += ["", "【道路状态】"]
     for edge in state.edges.values():
         status = "通行" if edge["open"] else f"阻断（{edge['reason']}）"

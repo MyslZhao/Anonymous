@@ -83,3 +83,89 @@ def test_benefit_estimate_prefers_larger_rescue():
     big = Proposal(agent="traffic", target_area="dorm_a", action="evacuate",
                    resource_required=ResourceRequest(buses=2))
     assert benefit_estimate(state, big) > benefit_estimate(state, small)
+
+
+# ---- 以下用例针对 live 模式下才会走到的驳回分支（mock 很难覆盖） ----
+
+
+def test_close_already_closed_road_is_rejected():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    proposal = Proposal(agent="security", priority="high", target_area="教学路", action="close_road")
+    resolution = resolve(state, [proposal])
+    assert not resolution.items
+    assert resolution.rejected[0].reason.endswith("已封闭")
+
+
+def test_open_already_open_road_is_rejected():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    proposal = Proposal(agent="traffic", priority="high", target_area="主干道", action="open_route")
+    resolution = resolve(state, [proposal])
+    assert not resolution.items
+    assert resolution.rejected[0].reason.endswith("本就通行")
+
+
+def test_unknown_road_is_rejected():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    proposal = Proposal(agent="security", priority="high", target_area="不存在的路", action="close_road")
+    resolution = resolve(state, [proposal])
+    assert not resolution.items
+    assert resolution.rejected[0].reason == "道路不存在"
+
+
+def test_unknown_zone_is_rejected():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    proposal = Proposal(
+        agent="medical",
+        priority="high",
+        target_area="dorm_z",
+        action="send_medical_team",
+        resource_required=ResourceRequest(medical_kits=1),
+    )
+    resolution = resolve(state, [proposal])
+    assert not resolution.items
+    assert resolution.rejected[0].reason == "目标区域不存在"
+
+
+def test_evacuate_from_isolated_zone_is_rejected():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    state.edges["e_road2"].update(open=False, reason="测试用：切断唯一通道")
+    proposal = Proposal(
+        agent="traffic",
+        priority="high",
+        target_area="dorm_a",
+        action="evacuate",
+        resource_required=ResourceRequest(buses=1),
+    )
+    resolution = resolve(state, [proposal])
+    assert not resolution.items
+    assert "路径阻断" in resolution.rejected[0].reason
+
+
+def test_medical_team_to_isolated_zone_is_rejected():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    state.edges["e_road2"].update(open=False, reason="测试用：切断唯一通道")
+    proposal = Proposal(
+        agent="medical",
+        priority="high",
+        target_area="dorm_a",
+        action="send_medical_team",
+        resource_required=ResourceRequest(medical_kits=2),
+    )
+    resolution = resolve(state, [proposal])
+    assert not resolution.items
+    assert "路径阻断" in resolution.rejected[0].reason
+
+
+def test_supply_to_isolated_zone_is_rejected():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    state.edges["e_road2"].update(open=False, reason="测试用：切断唯一通道")
+    proposal = Proposal(
+        agent="logistics",
+        priority="high",
+        target_area="dorm_a",
+        action="dispatch_supply",
+        resource_required=ResourceRequest(volunteers=2),
+    )
+    resolution = resolve(state, [proposal])
+    assert not resolution.items
+    assert "路径阻断" in resolution.rejected[0].reason

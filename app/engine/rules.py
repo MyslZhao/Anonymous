@@ -141,16 +141,16 @@ def resolve(state: SimState, proposals: list[Proposal]) -> Resolution:
             origin = "clinic" if proposal.action == "send_medical_team" else DEPOT
             if proposal.target_area not in state.zones:
                 rejected.append(
-                    Rejection(proposal.agent, proposal.action, proposal.target_area, "目标区域不存在")
+                    Rejection(agent=proposal.agent, action=proposal.action, target_area=proposal.target_area, reason="目标区域不存在")
                 )
                 continue
             if not state.path_exists(origin, proposal.target_area, closed_extra):
                 rejected.append(
                     Rejection(
-                        proposal.agent,
-                        proposal.action,
-                        proposal.target_area,
-                        f"路径阻断：{origin} 无法到达 {label}",
+                        agent=proposal.agent,
+                        action=proposal.action,
+                        target_area=proposal.target_area,
+                        reason=f"路径阻断：{origin} 无法到达 {label}",
                     )
                 )
                 continue
@@ -159,19 +159,19 @@ def resolve(state: SimState, proposals: list[Proposal]) -> Resolution:
             eid = state.find_edge(proposal.target_area)
             if eid is None:
                 rejected.append(
-                    Rejection(proposal.agent, proposal.action, proposal.target_area, "道路不存在")
+                    Rejection(agent=proposal.agent, action=proposal.action, target_area=proposal.target_area, reason="道路不存在")
                 )
                 continue
             edge = state.edges[eid]
             if proposal.action == "open_route" and edge["open"]:
                 rejected.append(
-                    Rejection(proposal.agent, proposal.action, proposal.target_area, f"{edge['name']} 本就通行")
+                    Rejection(agent=proposal.agent, action=proposal.action, target_area=proposal.target_area, reason=f"{edge['name']} 本就通行")
                 )
                 continue
             if proposal.action == "close_road":
                 if not edge["open"]:
                     rejected.append(
-                        Rejection(proposal.agent, proposal.action, proposal.target_area, f"{edge['name']} 已封闭")
+                        Rejection(agent=proposal.agent, action=proposal.action, target_area=proposal.target_area, reason=f"{edge['name']} 已封闭")
                     )
                     continue
                 isolation = state.isolating_edges(closed_extra)
@@ -205,17 +205,17 @@ def resolve(state: SimState, proposals: list[Proposal]) -> Resolution:
         if proposal.action == "evacuate":
             if proposal.target_area not in state.zones:
                 rejected.append(
-                    Rejection(proposal.agent, proposal.action, proposal.target_area, "目标区域不存在")
+                    Rejection(agent=proposal.agent, action=proposal.action, target_area=proposal.target_area, reason="目标区域不存在")
                 )
                 continue
             reachable = any(state.path_exists(proposal.target_area, s, closed_extra) for s in SHELTERS)
             if not reachable:
                 rejected.append(
                     Rejection(
-                        proposal.agent,
-                        proposal.action,
-                        proposal.target_area,
-                        f"路径阻断：{label} 无法到达任何避难所",
+                        agent=proposal.agent,
+                        action=proposal.action,
+                        target_area=proposal.target_area,
+                        reason=f"路径阻断：{label} 无法到达任何避难所",
                     )
                 )
                 continue

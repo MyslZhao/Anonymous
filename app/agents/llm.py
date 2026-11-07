@@ -47,6 +47,26 @@ def parse_proposal(text: str, role: str) -> Proposal:
     return Proposal.model_validate(data)
 
 
+ZONE_ACTIONS = {"send_medical_team", "dispatch_supply", "evacuate", "notify_students"}
+ROAD_ACTIONS = {"close_road", "open_route"}
+
+
+def shape_issue(state: SimState, proposal: Proposal) -> str | None:
+    """契约层校验：区域/道路填反了要能立刻发现并让模型重来一次。
+
+    这类错误很常见（模型把 close_road 的目标写成区域 id），
+    与其让规则引擎静默驳回，不如带着反馈重试，提升 live 模式下的成功率。
+    """
+    if proposal.action in ROAD_ACTIONS and state.find_edge(proposal.target_area) is None:
+        return (
+            f"target_area 填了「{proposal.target_area}」，但 {proposal.action} 必须是道路名称，"
+            "例如 2号道路、教学路、宿舍环线"
+        )
+    if proposal.action in ZONE_ACTIONS and proposal.target_area not in state.zones:
+        return f"target_area 填了「{proposal.target_area}」，但 {proposal.action} 必须是区域 id，例如 dorm_a"
+    return None
+
+
 async def _chat(messages: list[dict], temperature: float = 0.2) -> str:
     url = f"{settings.base_url}/chat/completions"
     payload = {
@@ -67,7 +87,7 @@ async def _chat(messages: list[dict], temperature: float = 0.2) -> str:
         raise AgentError(f"响应结构异常：{body}") from exc
 
 
-async def propose(role: str, state: SimState) -> tuple[Proposal, str]:
+async def propose(role: str, state: SimState, focus: str | None = None) -> tuple[Proposal, str]:
     """向指定角色索取一条结构化建议，返回 (proposal, 原始输出)。"""
     if settings.mock_mode:
         return mock_proposal(role, state), "[mock] 离线规则生成"
@@ -79,7 +99,7 @@ async def propose(role: str, state: SimState) -> tuple[Proposal, str]:
     )
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": build_user_message(state)},
+        {"role": "user", "content": build_user_message(state, focus)},
     ]
 
     async with _SEMAPHORE:
@@ -87,7 +107,11 @@ async def propose(role: str, state: SimState) -> tuple[Proposal, str]:
         for _ in range(2):
             try:
                 raw = await _chat(messages)
-                return parse_proposal(raw, role), raw
+                proposal = parse_proposal(raw, role)
+                issue = shape_issue(state, proposal)
+                if issue:
+                    raise AgentError(issue)
+                return proposal, raw
             except (AgentError, httpx.HTTPError, ValueError) as exc:
                 last_error = exc
                 messages = messages[:2] + [

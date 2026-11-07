@@ -66,3 +66,14 @@ def test_scenario_is_deterministic_across_calls():
     a = build_scenario(seed=3, severity=2, scenario="fire")
     b = build_scenario(seed=3, severity=2, scenario="fire")
     assert a.to_dict()["zones"] == b.to_dict()["zones"]
+
+
+def test_assign_focus_spreads_agents_across_zones():
+    from app.agents.coordinator import assign_focus
+
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    focus = assign_focus(state)
+    assert set(focus) == {"traffic", "student", "medical", "security", "logistics"}
+    assert focus["traffic"] != focus["student"], "交通与学生事务不应被分到同一个重点区域"
+    assert "dorm_a" in focus["traffic"]
+    assert "（" in focus["medical"]

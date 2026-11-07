@@ -51,14 +51,44 @@ def proposal_payload(state: SimState, proposal: Proposal, raw: str = "") -> dict
     }
 
 
-async def _ask(role: str, state: SimState) -> tuple[Proposal, str]:
+async def _ask(role: str, state: SimState, focus: str | None = None) -> tuple[Proposal, str]:
     try:
-        return await propose(role, state)
+        return await propose(role, state, focus)
     except Exception as exc:  # 单个角色失败不拖垮整轮
         return (
             Proposal(agent=role, action="idle", target_area="", reason=f"该角色本轮未给出有效建议：{exc}"),
             f"[error] {exc}",
         )
+
+
+def assign_focus(state: SimState) -> dict[str, str]:
+    """给每个角色分配一个重点区域，避免六个 Agent 全部涌向同一个区。
+
+    分工是确定性的（按人数/医疗需求/危险度排序），所以同一场景结果可复现；
+    但这只是“建议关注点”，最终采不采纳仍在 Agent 自己，规则引擎照旧校验。
+    """
+    trapped = sorted(
+        (z for z in state.zones.values() if z["trapped"] > 0),
+        key=lambda z: z["trapped"],
+        reverse=True,
+    )
+    if not trapped:
+        return {}
+
+    def label(zone: dict) -> str:
+        return f"{zone['name']}（{zone['id']}）"
+
+    first = trapped[0]
+    second = trapped[1] if len(trapped) > 1 else first
+    taken = {first["id"], second["id"]}
+    rest = [z for z in trapped if z["id"] not in taken] or trapped
+    return {
+        "traffic": label(first),
+        "student": label(second),
+        "medical": label(max(state.zones.values(), key=lambda z: z["medical_need"])),
+        "security": label(max(state.zones.values(), key=lambda z: z["hazard"])),
+        "logistics": label(max(rest, key=lambda z: z["population"])),
+    }
 
 
 def _metrics_payload(metrics, resolution) -> dict:
@@ -79,7 +109,8 @@ async def stream_simulation(
         "data": {**snapshot(state), "mode": settings.mode_label, "decision_agent": decision_agent},
     }
 
-    tasks = [asyncio.create_task(_ask(role, state)) for role in ALL_AGENTS]
+    focus_map = assign_focus(state)
+    tasks = [asyncio.create_task(_ask(role, state, focus_map.get(role))) for role in ALL_AGENTS]
     proposals: list[Proposal] = []
     for finished in asyncio.as_completed(tasks):
         proposal, raw = await finished
