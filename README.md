@@ -29,13 +29,22 @@ Agent 只输出结构化建议，资源够不够、道路通不通、行动冲�
 | 体育馆 | 临时避难点 |
 | 校门及道路 | 救援通道 |
 
-每区固定基础数据：人口数量、风险等级、积水程度、道路状态、医疗需求、物资需求。全部为自建模拟数据，不接入任何真实校园隐私信息。
+每区固定基础数据：人口数量、危险度（积水/火势/影响/病例密度）、风险等级、道路状态、医疗需求、物资需求。全部为自建模拟数据，不接入任何真实校园隐私信息。
 
-### 2.2 主事件
+### 2.2 应急场景
 
-**校园突发暴雨**：部分区域积水、道路中断、人员受困，需要多部门协同救援。
+同一套校园拓扑上挂 4 个突发事件，规则引擎与六个 Agent 角色完全复用：
 
-模拟规模：居民 100–500 人（**程序模拟数据，不是 500 个 LLM Agent**）、同时模拟任务 1–2 个。
+| 场景 id | 名称 | 冲突演示点 | 关键约束 |
+| --- | --- | --- | --- |
+| `rainstorm` | 暴雨内涝 | 校车争夺 + 封锁唯一通道 | 积水断路，医疗包 14 |
+| `fire` | 宿舍火灾 | 校车争夺 + 消防通道封闭 | 医疗需求高（50%），医疗包 10 |
+| `blackout` | 大面积停电 | 校车争夺 + 检修封路 | 滞留多、医疗需求低，志愿者 40 |
+| `food_safety` | 食物中毒 | 校车争夺 + 流调封控唯一通道 | 医疗包仅 8，需求 80% |
+
+模拟规模：每场景 100–500 人（**程序模拟数据，不是 500 个 LLM Agent**）、同时模拟任务 1–2 个。
+
+新增场景只需在 `app/data/scenarios.py` 写一个 `_build_xxx(seed, severity)` 并注册进 `SCENARIOS`，前端下拉框与 API 自动识别，无需改动规则引擎。
 
 ## 3. 架构
 
@@ -251,9 +260,11 @@ uv run python run.py             # 打开 http://127.0.0.1:8000
 
 ### 10.2 页面能力
 
-- 左侧：突发事件、可用资源、SVG 校园态势图（积水高度 / 阻断道路 / 被困区域）、执行效果。
+- 顶部可切换**应急场景**（暴雨内涝 / 宿舍火灾 / 大面积停电 / 食物中毒）、事件等级与随机种子。
+- 左侧：突发事件、可用资源、SVG 校园态势图（危险度填充 / 阻断道路 / 待救区域）、执行效果。
 - 右侧：六角色建议**逐条浮现**（点目标区域地图会高亮）、冲突与裁决、可执行方案（含被驳回原因）、路线 A/B 对比表。
 - 勾选「决策 Agent（路线 B）」后，同一场景会同时算出 A、B 两套方案并给出对比。
+- 地图与指标的措辞随场景切换（积水 / 火势 / 影响 / 病例密度，被困 / 滞留 / 待救治）。
 
 ### 10.3 目录结构
 
@@ -262,7 +273,8 @@ app/
   main.py              FastAPI 入口（页面 / 模拟 / SSE / 历史）
   config.py            配置（.env、mock 判定、并发上限）
   models.py            Proposal / PlanItem / Conflict / Metrics 契约
-  data/campus.py       8 区域、11 条道路、资源库存、暴雨场景生成
+  data/campus.py       8 区域、11 条道路、资源库存（与场景无关的静态拓扑）
+  data/scenarios.py    四个应急场景的生成器与注册表
   engine/state.py      模拟状态、可达性判定、孤立通道检测
   engine/rules.py      规则引擎：收益估算、资源校验、冲突裁决、降级
   engine/simulator.py  方案执行与指标计算
@@ -273,7 +285,7 @@ app/
   agents/coordinator.py 调度中心与 SSE 事件流
   storage.py           SQLite 存档（runs 表）
   static/index.html    单页前端（无构建步骤）
-tests/                 pytest：状态/规则/流水线/API 共 23 个用例
+tests/                 pytest：状态/场景/规则/流水线/API 共 43 个用例
 pyproject.toml         依赖声明（uv 管理）
 uv.lock                锁定的完整依赖树
 .python-version        锁定 Python 3.12
@@ -286,10 +298,13 @@ scripts/make-wheelhouse.ps1  生成 Linux 离线依赖包
 | --- | --- | --- |
 | GET | `/` | 单页前端 |
 | GET | `/api/health` | 健康检查与当前模式 |
-| GET | `/api/scenario?seed=&severity=` | 仅生成场景快照 |
-| POST | `/api/simulate?seed=&severity=&decision_agent=` | 同步执行完整模拟 |
+| GET | `/api/scenarios` | 可用场景列表（id / 名称 / 一句话说明） |
+| GET | `/api/scenario?scenario=&seed=&severity=` | 仅生成场景快照 |
+| POST | `/api/simulate?scenario=&seed=&severity=&decision_agent=` | 同步执行完整模拟 |
 | GET | `/api/simulate/stream?...` | SSE 事件流：scenario / proposal ×6 / resolution / result |
 | GET | `/api/history?limit=` | 历史运行记录 |
+
+`scenario` 取值见 §2.2，缺省 `rainstorm`；传未知值返回 400。
 
 ### 10.5 测试
 
@@ -297,7 +312,7 @@ scripts/make-wheelhouse.ps1  生成 Linux 离线依赖包
 uv run pytest
 ```
 
-覆盖：可达性与封路冲突的前提、资源不超发、重复提议合并、决策 Agent 与路线 A 的对比、SSE 事件顺序、SQLite 落库。按 AGENTS.md 规定，**测试全绿之后才允许 `git commit`**。
+覆盖：四个场景各自的可达性与冲突前提、资源不超发、重复提议合并、决策 Agent 与路线 A 的对比、SSE 事件顺序、SQLite 落库、未知场景 400。按 AGENTS.md 规定，**测试全绿之后才允许 `git commit`**。
 
 ### 10.6 尚未做（留给部署阶段）
 

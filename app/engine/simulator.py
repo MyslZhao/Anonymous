@@ -126,7 +126,7 @@ def snapshot(state: SimState) -> dict:
 def _zone_status(zone: dict) -> str:
     if zone["trapped"] > 0:
         return "trapped"
-    if zone["water"] >= 6:
+    if zone["hazard"] >= 6:
         return "flooded"
     return "normal"
 

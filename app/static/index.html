@@ -111,11 +111,14 @@
 </header>
 
 <div class="controls">
-  <label class="field">暴雨等级
+  <label class="field">应急场景
+    <select id="scenario"></select>
+  </label>
+  <label class="field">事件等级
     <select id="severity">
-      <option value="1">蓝色预警</option>
-      <option value="2">黄色预警</option>
-      <option value="3" selected>橙色预警</option>
+      <option value="1">Ⅰ 级 · 轻微</option>
+      <option value="2">Ⅱ 级 · 较重</option>
+      <option value="3" selected>Ⅲ 级 · 严重</option>
     </select>
   </label>
   <label class="field">随机种子
@@ -131,7 +134,7 @@
 
 <main>
   <div class="kpis">
-    <div class="kpi"><div class="k">受困总数</div><div class="v" id="kpiTrapped">—</div></div>
+    <div class="kpi"><div class="k" id="kpiTrappedLabel">受困总数</div><div class="v" id="kpiTrapped">—</div></div>
     <div class="kpi"><div class="k">成功转移</div><div class="v" id="kpiRescued">—</div></div>
     <div class="kpi"><div class="k">救援覆盖率</div><div class="v" id="kpiCoverage">—</div></div>
     <div class="kpi"><div class="k">冲突拦截</div><div class="v" id="kpiConflicts">—</div></div>
@@ -144,7 +147,7 @@
         <h2><span class="dot"></span>突发事件</h2>
         <div class="card-body">
           <div class="event-title" id="eventTitle">尚未生成场景</div>
-          <div class="event-desc" id="eventDesc">点击「开始模拟」，系统将生成暴雨积水、道路阻断与被困人员数据。</div>
+          <div class="event-desc" id="eventDesc">选择场景与事件等级，点击「开始模拟」。</div>
           <div class="resources" id="resources"></div>
         </div>
       </div>
@@ -154,8 +157,8 @@
         <svg id="map" viewBox="0 0 900 570" xmlns="http://www.w3.org/2000/svg"></svg>
         <div class="legend">
           <span><i style="background:#334155"></i>区域</span>
-          <span><i style="background:#38bdf8"></i>积水</span>
-          <span><i style="background:#f43f5e"></i>有被困人员</span>
+          <span><i style="background:#38bdf8"></i><span id="legendHazard">危险度</span></span>
+          <span><i style="background:#f43f5e"></i><span id="legendTrapped">有被困人员</span></span>
           <span><i style="background:#ef4444"></i>道路阻断</span>
         </div>
       </div>
@@ -197,7 +200,10 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { zones: {}, edges: [], edgesByName: {}, proposals: 0, finished: false, es: null };
+const state = {
+  zones: {}, edges: [], edgesByName: {}, proposals: 0, finished: false, es: null,
+  hazardLabel: "危险度", trappedLabel: "被困"
+};
 
 const ACTION_TEXT = {
   send_medical_team: "医疗支援", close_road: "道路管控", evacuate: "人员转移",
@@ -209,6 +215,14 @@ fetch("/api/health").then(r => r.json()).then(d => {
   b.textContent = d.mock ? "离线模拟模式（Mock）" : "在线模式 · " + d.mode;
   b.classList.toggle("live", !d.mock);
 }).catch(() => { $("modeBadge").textContent = "后端未连接"; });
+
+fetch("/api/scenarios").then(r => r.json()).then(d => {
+  const select = $("scenario");
+  select.innerHTML = d.scenarios
+    .map(s => `<option value="${s.id}">${s.name} · ${s.summary}</option>`)
+    .join("");
+  select.value = d.default;
+}).catch(() => { $("scenario").innerHTML = '<option value="rainstorm">暴雨内涝</option>'; });
 
 function setStatus(text, busy) {
   $("status").innerHTML = (busy ? '<span class="pulse"></span>' : "") + text;
@@ -245,7 +259,7 @@ function drawMap(data) {
   data.zones.forEach(z => {
     const trapped = z.trapped > 0;
     const w = 118, h = 62, x = z.x - w / 2, y = z.y - h / 2;
-    const fillH = Math.min(h - 4, (z.water / 10) * h);
+    const fillH = Math.min(h - 4, (z.hazard / 10) * h);
     zones += `<g id="zone-${z.id}" class="zone">
       <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="12"
         fill="#16223a" stroke="${trapped ? "#f43f5e" : "#2c3d5c"}" stroke-width="${trapped ? 2 : 1.5}"/>
@@ -253,7 +267,7 @@ function drawMap(data) {
       <rect x="${x + 2}" y="${y + h - 2 - fillH}" width="${w - 4}" height="${fillH}" fill="url(#waterGrad)" clip-path="url(#clip-${z.id})"/>
       <text x="${z.x}" y="${z.y - 6}" fill="#e6eefc" font-size="13" font-weight="600" text-anchor="middle">${z.name}</text>
       <text x="${z.x}" y="${z.y + 12}" fill="#9fb3cf" font-size="11" text-anchor="middle">
-        ${trapped ? "被困 " + z.trapped + " 人" : "水位 " + z.water}
+        ${trapped ? state.trappedLabel + " " + z.trapped + " 人" : state.hazardLabel + " " + z.hazard}
       </text>
       ${trapped ? `<circle cx="${x + w - 12}" cy="${y + 13}" r="4" fill="#f43f5e"/>` : ""}
     </g>`;
@@ -311,8 +325,13 @@ function reset() {
 }
 
 function renderScenario(d) {
+  state.hazardLabel = d.event.hazard_label || "危险度";
+  state.trappedLabel = d.event.trapped_label || "被困";
   $("eventTitle").textContent = d.event.title;
   $("eventDesc").textContent = d.event.description;
+  $("kpiTrappedLabel").textContent = state.trappedLabel + "总数";
+  $("legendHazard").textContent = state.hazardLabel;
+  $("legendTrapped").textContent = "有" + state.trappedLabel + "人员";
   $("kpiTrapped").textContent = d.trapped_total;
   const res = d.resources;
   $("resources").innerHTML = Object.entries(res)
@@ -440,6 +459,7 @@ function start() {
   $("startBtn").disabled = true;
   setStatus("正在生成场景…", true);
   const params = new URLSearchParams({
+    scenario: $("scenario").value || "rainstorm",
     seed: $("seed").value || "7",
     severity: $("severity").value,
     decision_agent: $("decision").checked ? "true" : "false",

@@ -57,16 +57,18 @@ SYSTEM_PROMPTS: dict[str, str] = {
 
 def build_user_message(state: SimState) -> str:
     """把当前校园快照渲染成提示词（结构化、可读、不含隐私数据）。"""
+    hazard_label = state.event.get("hazard_label", "危险度")
+    trapped_label = state.event.get("trapped_label", "被困")
     lines = [
-        f"突发事件：{state.event.get('title', '暴雨')}",
+        f"突发事件：{state.event.get('title', '突发情况')}",
         f"事件描述：{state.event.get('description', '')}",
         "",
-        "【区域状态】（水位/10，被困人数，医疗需求）",
+        f"【区域状态】（{hazard_label}/10，{trapped_label}人数，医疗需求）",
     ]
     for zone in state.zones.values():
         lines.append(
-            f"- {zone['id']} {zone['name']}：水位 {zone['water']}，"
-            f"在区人数 {zone['population']}，被困 {zone['trapped']}，医疗需求 {zone['medical_need']}"
+            f"- {zone['id']} {zone['name']}：{hazard_label} {zone['hazard']}，"
+            f"在区人数 {zone['population']}，{trapped_label} {zone['trapped']}，医疗需求 {zone['medical_need']}"
         )
     lines += ["", "【道路状态】"]
     for edge in state.edges.values():

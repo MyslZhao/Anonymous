@@ -1,7 +1,7 @@
 """规则引擎测试：资源不足要驳回、封路要降级、重复提议要合并。"""
 
 from app.agents.mock import mock_proposal
-from app.data.campus import build_scenario
+from app.data.scenarios import build_scenario
 from app.engine.rules import benefit_estimate, resolve
 from app.models import ALL_AGENTS, Proposal, ResourceRequest
 

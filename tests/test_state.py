@@ -1,6 +1,6 @@
 """模拟状态与可达性测试：确认场景设计真的会制造出封路冲突。"""
 
-from app.data.campus import build_scenario
+from app.data.scenarios import build_scenario
 
 
 def test_scenario_has_blocked_roads_and_trapped_people():

@@ -79,7 +79,7 @@ def _mock_plan(state: SimState, proposals: list[Proposal]) -> tuple[list[Proposa
             target_area="2号道路",
             action="close_road",
             resource_required=ResourceRequest(barricades=2),
-            reason="道路积水存在风险，但需保留救援通行",
+            reason="道路存在通行风险，但需保留救援通行",
         )
     )
     plan.append(

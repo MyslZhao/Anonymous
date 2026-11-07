@@ -8,7 +8,7 @@ from app.agents.decision import decide
 from app.agents.llm import propose
 from app.agents.roles import AGENT_META
 from app.config import settings
-from app.data.campus import build_scenario
+from app.data.scenarios import DEFAULT_SCENARIO, build_scenario
 from app.engine.rules import resolve
 from app.engine.simulator import apply_plan, snapshot, summarize_item
 from app.models import ALL_AGENTS, Proposal
@@ -69,9 +69,11 @@ def _metrics_payload(metrics, resolution) -> dict:
     }
 
 
-async def stream_simulation(seed: int = 7, severity: int = 3, decision_agent: bool = False):
+async def stream_simulation(
+    seed: int = 7, severity: int = 3, decision_agent: bool = False, scenario: str = DEFAULT_SCENARIO
+):
     """以事件流形式跑完一次模拟，供 SSE 前端逐步揭示。"""
-    state = build_scenario(seed, severity)
+    state = build_scenario(seed, severity, scenario)
     yield {
         "type": "scenario",
         "data": {**snapshot(state), "mode": settings.mode_label, "decision_agent": decision_agent},
@@ -87,11 +89,11 @@ async def stream_simulation(seed: int = 7, severity: int = 3, decision_agent: bo
 
     comparison = None
     if decision_agent:
-        state_a = build_scenario(seed, severity)
+        state_a = build_scenario(seed, severity, scenario)
         res_a = resolve(state_a, proposals)
         _, metrics_a = apply_plan(state_a, res_a)
 
-        state_b = build_scenario(seed, severity)
+        state_b = build_scenario(seed, severity, scenario)
         resolution, trace, attempts, fallback = await decide(state_b, proposals)
         yield {
             "type": "decision",
@@ -135,6 +137,7 @@ async def stream_simulation(seed: int = 7, severity: int = 3, decision_agent: bo
             "mode": settings.mode_label,
             "seed": seed,
             "severity": severity,
+            "scenario": scenario,
             "decision_agent": decision_agent,
         },
     }
@@ -142,10 +145,12 @@ async def stream_simulation(seed: int = 7, severity: int = 3, decision_agent: bo
     yield result
 
 
-async def run_simulation(seed: int = 7, severity: int = 3, decision_agent: bool = False) -> dict:
+async def run_simulation(
+    seed: int = 7, severity: int = 3, decision_agent: bool = False, scenario: str = DEFAULT_SCENARIO
+) -> dict:
     """非流式执行，返回完整结果（测试与 API 复用同一套逻辑）。"""
     events: list[dict] = []
-    async for event in stream_simulation(seed, severity, decision_agent):
+    async for event in stream_simulation(seed, severity, decision_agent, scenario):
         events.append(event)
     payload = {
         "scenario": next((e["data"] for e in events if e["type"] == "scenario"), None),

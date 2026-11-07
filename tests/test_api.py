@@ -29,6 +29,27 @@ def test_scenario_preview():
     assert data["trapped_total"] > 0
 
 
+def test_scenarios_endpoint_lists_all():
+    with TestClient(app) as client:
+        data = client.get("/api/scenarios").json()
+    ids = {item["id"] for item in data["scenarios"]}
+    assert ids == {"rainstorm", "fire", "blackout", "food_safety"}
+    assert data["default"] == "rainstorm"
+
+
+def test_simulate_with_fire_scenario():
+    with TestClient(app) as client:
+        data = client.post("/api/simulate", params={"seed": 7, "severity": 3, "scenario": "fire"}).json()
+    assert data["scenario"]["event"]["id"] == "fire"
+    assert data["result"]["metrics"]["conflicts"] >= 1
+
+
+def test_unknown_scenario_returns_400():
+    with TestClient(app) as client:
+        response = client.post("/api/simulate", params={"scenario": "earthquake"})
+    assert response.status_code == 400
+
+
 def test_simulate_endpoint_returns_full_result():
     with TestClient(app) as client:
         data = client.post("/api/simulate", params={"seed": 7, "severity": 3}).json()
