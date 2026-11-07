@@ -17,3 +17,6 @@ data/
 # 编辑器
 .vscode/
 .idea/
+
+# 离线依赖打包产物（体积大，按需生成）
+wheelhouse/

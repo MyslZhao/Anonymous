@@ -235,13 +235,12 @@ Swap 只兜偶发峰值，**不能当内存扩容手段**，也不作为增加 A
 
 ### 10.1 启动
 
-**环境要求：Python 3.11+（推荐 3.14）。** 不要用 3.10：pytest 9.x 已不支持该版本，会在收集阶段抛 `NodeId` 内部错误。
+依赖统一由 [uv](https://docs.astral.sh/uv/) 管理，项目用 `.python-version` 锁定 Python 3.12，**uv 会自己准备解释器，与系统里装了什么版本无关**。
 
 ```powershell
-py -3.14 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+uv sync                          # 按 uv.lock 安装依赖并准备 Python 3.12
 Copy-Item .env.example .env      # 不填 Key 则自动进入离线 mock 模式
-.\.venv\Scripts\python.exe run.py
+uv run python run.py             # 打开 http://127.0.0.1:8000
 ```
 
 打开 <http://127.0.0.1:8000>。页面右上角徽标会显示「离线模拟模式（Mock）」或「在线模式 · deepseek-chat」。
@@ -275,6 +274,10 @@ app/
   storage.py           SQLite 存档（runs 表）
   static/index.html    单页前端（无构建步骤）
 tests/                 pytest：状态/规则/流水线/API 共 23 个用例
+pyproject.toml         依赖声明（uv 管理）
+uv.lock                锁定的完整依赖树
+.python-version        锁定 Python 3.12
+scripts/make-wheelhouse.ps1  生成 Linux 离线依赖包
 ```
 
 ### 10.4 接口
@@ -291,7 +294,7 @@ tests/                 pytest：状态/规则/流水线/API 共 23 个用例
 ### 10.5 测试
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+uv run pytest
 ```
 
 覆盖：可达性与封路冲突的前提、资源不超发、重复提议合并、决策 Agent 与路线 A 的对比、SSE 事件顺序、SQLite 落库。按 AGENTS.md 规定，**测试全绿之后才允许 `git commit`**。
@@ -301,4 +304,64 @@ tests/                 pytest：状态/规则/流水线/API 共 23 个用例
 - Dockerfile / docker-compose.yml 与 Nginx 生产配置。
 - 真实 DeepSeek Key 下的端到端联调（当前仅验证了契约与 mock 路径）。
 - 多用户并发与会话隔离。
+
+## 11. 服务器部署（uv）
+
+### 11.1 为什么不再用系统 Python
+
+ECS 自带 Python 3.6，装不了任何现代依赖：`pydantic-core` 等包早就不再发布 3.6 的 wheel，`pip install` 必然失败；硬装源码还要 Rust 工具链和编译内存，2C2G 上大概率 OOM。
+
+结论：**不要动系统 Python，也不要试图升级它**（Alibaba Cloud Linux 的系统包管理器会牵一发动全身）。用 uv 自带解释器，与系统 3.6 完全隔离。
+
+### 11.2 方案 A：服务器能访问外网（推荐）
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+uv python install 3.12        # uv 自己下载 CPython，不需要系统 Python
+uv sync --frozen --no-dev     # 按 uv.lock 安装，版本与本地完全一致
+uv run python run.py --host 0.0.0.0 --port 8000
+```
+
+国内网络慢的话，先设镜像再执行：
+
+```bash
+export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+export UV_PYTHON_INSTALL_MIRROR=https://ghproxy.net/https://github.com/astral-sh/python-build-standalone/releases/download
+```
+
+服务启动后 `curl http://127.0.0.1:8000/api/health` 应返回 `{"status":"ok",...}`。首次启动会建 `data/campusmind.db`，记得把这个目录挂到持久化位置。
+
+### 11.3 方案 B：服务器完全无法访问外网
+
+1. 本地生成离线包（Linux x86_64 / CPython 3.12 的 wheel，在 Windows 上也能打包）：
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\make-wheelhouse.ps1 -Out wheelhouse
+   ```
+
+2. 把 `wheelhouse/`（含自动生成的 `requirements.txt`）、`uv.lock`、`pyproject.toml`、`app/`、`run.py` 一起上传。
+
+3. 服务器上（`uv` 二进制可从本地下载后一并上传，它是单文件静态程序）：
+
+   ```bash
+   uv venv --python 3.12 .venv      # 若连解释器都下不了，见下方备注
+   uv pip install --no-index --find-links wheelhouse -r wheelhouse/requirements.txt
+   .venv/bin/python run.py --host 0.0.0.0 --port 8000
+   ```
+
+   > 备注：如果服务器连 CPython 都下载不了，就在**任意联网的 Linux 机器**上执行 `uv python install 3.12`，
+   > 把 `~/.local/share/uv/python/` 整个目录打包上传，再用 `uv venv --python <该目录下的 python3.12>` 指定解释器。
+
+### 11.4 服务器上的并发
+
+`run.py` 直接用 uvicorn 单进程启动，就是 §6.1 的结论：**单异步 worker**。不要在服务器上套 gunicorn 开多 worker——模拟状态在进程内存里，多 worker 会导致状态分叉。
+
+上线后按 README §6.1 的闸门实测：
+
+```bash
+free -h && docker stats --no-stream 2>/dev/null; ps -o rss= -p $(pgrep -f "run.py" | head -1)
+```
+
 

@@ -1,0 +1,23 @@
+[project]
+name = "campusmind"
+version = "0.1.0"
+description = "校园多 Agent 应急协同决策平台（Hackathon 原型）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.162.0",
+    "uvicorn[standard]==0.54.0",
+    "httpx==0.28.1",
+]
+
+[dependency-groups]
+dev = ["pytest==9.2.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.uv]
+# 国内服务器建议取消下面注释，或直接设置环境变量 UV_DEFAULT_INDEX
+# index-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+# 服务器上只装运行时依赖时可加 --no-dev
