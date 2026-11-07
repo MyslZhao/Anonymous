@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from app.agents.llm import AgentError, _chat
+from app.agents.llm import AgentError, _chat, extract_json
 from app.agents.prompts import build_user_message
 from app.config import settings
 from app.engine.rules import resolve
@@ -33,7 +33,11 @@ DECISION_SYSTEM = """你是校园应急决策 Agent。你的目标不是复述�
     }
   ]
 }
-所有资源总和不得超过快照中的库存。不要输出 JSON 之外的任何文字。"""
+输出要求：
+1. plan 必须是数组，至少 3 项行动，覆盖多个部门（医疗、转运、物资、道路管控中至少三类），
+   不能只挑一条行动交差。
+2. 顶层必须是 {"objective": ..., "plan": [...]}，不要把单个行动对象直接作为顶层输出。
+3. 所有资源总和不得超过快照中的库存。不要输出 JSON 之外的任何文字。"""
 
 
 def _mock_plan(state: SimState, proposals: list[Proposal]) -> tuple[list[Proposal], str]:
@@ -105,25 +109,92 @@ def _mock_plan(state: SimState, proposals: list[Proposal]) -> tuple[list[Proposa
     return plan, objective
 
 
-async def _llm_plan(state: SimState, proposals: list[Proposal]) -> tuple[list[Proposal], str]:
-    payload = {
-        "state": state.to_dict(),
-        "proposals": [json.loads(p.model_dump_json()) for p in proposals],
-    }
+PLAN_KEYS = ("plan", "plans", "actions", "decisions", "plan_items")
+MIN_PLAN_ITEMS = 3
+
+AGENT_ALIASES = {
+    "指挥": "command",
+    "应急指挥": "command",
+    "医疗": "medical",
+    "保卫": "security",
+    "后勤": "logistics",
+    "交通": "traffic",
+    "学生": "student",
+    "学生事务": "student",
+}
+
+ACTION_ALIASES = {
+    "医疗支援": "send_medical_team",
+    "派医疗队": "send_medical_team",
+    "封路": "close_road",
+    "道路管控": "close_road",
+    "转发": "evacuate",
+    "转移": "evacuate",
+    "疏散": "evacuate",
+    "物资投送": "dispatch_supply",
+    "抢通": "open_route",
+    "道路抢通": "open_route",
+    "通知": "notify_students",
+    "信息发布": "notify_students",
+}
+
+
+def normalize_plan(data: dict) -> list[Proposal]:
+    """把模型返回的“各种形状”归一成 Proposal 列表。
+
+    实测 DeepSeek 有时不按 schema 输出，而是直接甩一个裸提议对象
+    （顶层就是 agent/action/target_area），没有 plan 数组。这里全部兼容，
+    并且逐条容错：某一条非法只丢这一条，不连累整份方案。
+    """
+    raw_items = None
+    for key in PLAN_KEYS:
+        if key in data:
+            raw_items = data[key]
+            break
+    if raw_items is None:
+        raw_items = [data] if "action" in data else []
+
+    if isinstance(raw_items, dict):
+        raw_items = [raw_items] if "action" in raw_items else [v for v in raw_items.values() if isinstance(v, dict)]
+    if not isinstance(raw_items, list):
+        raw_items = []
+
+    proposals: list[Proposal] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        payload = dict(item)
+        payload["agent"] = AGENT_ALIASES.get(str(payload.get("agent", "")).strip(), payload.get("agent") or "command")
+        payload["action"] = ACTION_ALIASES.get(str(payload.get("action", "")).strip(), payload.get("action") or "idle")
+        payload.setdefault("priority", "medium")
+        try:
+            proposals.append(Proposal.model_validate(payload))
+        except Exception:  # 单条非法不影响其他条目
+            continue
+    return proposals
+
+
+async def _llm_plan(state: SimState, proposals: list[Proposal], feedback: str = "") -> tuple[list[Proposal], str]:
     user = build_user_message(state) + "\n\n【各角色原始建议】\n" + json.dumps(
-        payload["proposals"], ensure_ascii=False, indent=2
+        [json.loads(p.model_dump_json()) for p in proposals], ensure_ascii=False, indent=2
     )
+    if feedback:
+        user += f"\n\n【上一轮方案被规则引擎驳回的原因】\n{feedback}\n请修正这些问题，重新输出完整方案。"
+
     raw = await _chat(
         [{"role": "system", "content": DECISION_SYSTEM}, {"role": "user", "content": user}],
         temperature=0.1,
+        max_tokens=1600,
     )
-    start, end = raw.find("{"), raw.rfind("}")
-    if start == -1 or end == -1:
-        raise AgentError("决策 Agent 输出缺少 JSON")
-    data = json.loads(raw[start : end + 1])
-    plan = [Proposal.model_validate(item) for item in data.get("plan", [])]
+    data = extract_json(raw)
+    plan = normalize_plan(data)
     if not plan:
-        raise AgentError("决策 Agent 返回了空方案")
+        raise AgentError(f"决策 Agent 未给出可解析的计划（顶层键：{list(data)[:5]}）")
+    if len(plan) < MIN_PLAN_ITEMS:
+        raise AgentError(
+            f"方案不完整：只给出 {len(plan)} 项行动。决策 Agent 必须综合各部门建议产出整体方案，"
+            f"至少 {MIN_PLAN_ITEMS} 项行动。"
+        )
     return plan, str(data.get("objective", ""))
 
 
@@ -133,6 +204,7 @@ async def decide(
     """返回 (裁决结果, 决策轨迹, 尝试次数, 是否回退到路线 A)。"""
     trace: list[str] = []
     attempts = 0
+    feedback = ""
 
     for attempt in range(settings.max_retry_rounds + 1):
         attempts = attempt + 1
@@ -140,9 +212,13 @@ async def decide(
             if settings.mock_mode:
                 plan, objective = _mock_plan(state, proposals)
             else:
-                plan, objective = await _llm_plan(state, proposals)
+                plan, objective = await _llm_plan(state, proposals, feedback)
         except Exception as exc:  # 决策 Agent 失败不影响主流程
             trace.append(f"第 {attempts} 轮决策失败：{exc}")
+            feedback = (
+                f"{exc}。请严格按照 system 提示中的 schema 输出，plan 至少 {MIN_PLAN_ITEMS} 项，"
+                "覆盖医疗、转运、物资、道路等多个部门。"
+            )
             continue
 
         trace.append(f"第 {attempts} 轮目标：{objective or '最大化整体救援收益'}")
@@ -152,8 +228,8 @@ async def decide(
             trace.append(f"方案通过规则校验：{len(resolution.items)} 项行动，资源余量 {resolution.ledger}")
             return resolution, trace, attempts, False
 
-        detail = "；".join(f"{r.agent}:{r.reason}" for r in resolution.rejected)
-        trace.append(f"第 {attempts} 轮方案被规则引擎驳回（{detail}），带反馈重试")
+        feedback = "；".join(f"{r.agent} 的 {r.action}@{r.target_area}：{r.reason}" for r in resolution.rejected)
+        trace.append(f"第 {attempts} 轮方案被规则引擎驳回（{feedback}），带反馈重试")
 
     trace.append("决策 Agent 未能产出可执行方案，回退到路线 A（规则仲裁）")
     return resolve(state, proposals), trace, attempts, True

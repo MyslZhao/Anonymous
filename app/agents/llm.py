@@ -67,13 +67,13 @@ def shape_issue(state: SimState, proposal: Proposal) -> str | None:
     return None
 
 
-async def _chat(messages: list[dict], temperature: float = 0.2) -> str:
+async def _chat(messages: list[dict], temperature: float = 0.2, max_tokens: int = 600) -> str:
     url = f"{settings.base_url}/chat/completions"
     payload = {
         "model": settings.model,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": 600,
+        "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
     headers = {"Authorization": f"Bearer {settings.api_key}", "Content-Type": "application/json"}

@@ -50,6 +50,25 @@ def test_unknown_scenario_returns_400():
     assert response.status_code == 400
 
 
+def test_simulate_honors_scale_and_vehicle_overrides():
+    with TestClient(app) as client:
+        base = client.post("/api/simulate", params={"scenario": "rainstorm", "seed": 7}).json()
+        tuned = client.post(
+            "/api/simulate",
+            params={"scenario": "rainstorm", "seed": 7, "scale": 2.0, "buses": 6, "boats": 3},
+        ).json()
+    assert tuned["result"]["state"]["resources"]["buses"] == 6
+    assert tuned["result"]["state"]["resources"]["boats"] == 3
+    assert tuned["scenario"]["trapped_total"] > base["scenario"]["trapped_total"]
+    assert tuned["result"]["population_scale"] == 2.0
+
+
+def test_scale_out_of_range_returns_422():
+    with TestClient(app) as client:
+        response = client.post("/api/simulate", params={"scale": 9})
+    assert response.status_code == 422
+
+
 def test_simulate_endpoint_returns_full_result():
     with TestClient(app) as client:
         data = client.post("/api/simulate", params={"seed": 7, "severity": 3}).json()

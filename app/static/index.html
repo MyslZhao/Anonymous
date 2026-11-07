@@ -124,6 +124,21 @@
   <label class="field">随机种子
     <input type="number" id="seed" value="7" min="0" max="9999" />
   </label>
+  <label class="field">人数规模
+    <select id="scale">
+      <option value="0.5">0.5×</option>
+      <option value="1" selected>1×</option>
+      <option value="1.5">1.5×</option>
+      <option value="2">2×</option>
+      <option value="3">3×</option>
+    </select>
+  </label>
+  <label class="field">校车数
+    <input type="number" id="buses" min="0" max="20" placeholder="默认" />
+  </label>
+  <label class="field">冲锋舟数
+    <input type="number" id="boats" min="0" max="10" placeholder="默认" />
+  </label>
   <label class="toggle" title="路线 B：独立决策 Agent 以整体利益最大化重新编排方案">
     <input type="checkbox" id="decision" /> 决策 Agent（路线 B）
   </label>
@@ -462,8 +477,13 @@ function start() {
     scenario: $("scenario").value || "rainstorm",
     seed: $("seed").value || "7",
     severity: $("severity").value,
+    scale: $("scale").value || "1",
     decision_agent: $("decision").checked ? "true" : "false",
   });
+  const buses = $("buses").value.trim();
+  const boats = $("boats").value.trim();
+  if (buses !== "") params.set("buses", buses);
+  if (boats !== "") params.set("boats", boats);
   const es = new EventSource("/api/simulate/stream?" + params);
   state.es = es;
   es.onmessage = (e) => handle(JSON.parse(e.data));

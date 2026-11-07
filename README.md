@@ -44,6 +44,16 @@ Agent 只输出结构化建议，资源够不够、道路通不通、行动冲�
 
 模拟规模：每场景 100–500 人（**程序模拟数据，不是 500 个 LLM Agent**）、同时模拟任务 1–2 个。
 
+**演示时可即时调整**（不改代码）：
+
+| 参数 | API | 页面 | 说明 |
+| --- | --- | --- | --- |
+| 人数规模 | `scale` 0.1–5.0 | 0.5×–3× 下拉 | 等比放大人口、被困人数、医疗需求与物资需求 |
+| 校车数 | `buses` 0–20 | 输入框（留空用场景默认） | 转运主运力，直接改变资源冲突的激烈程度 |
+| 冲锋舟数 | `boats` 0–10 | 输入框（留空用场景默认） | 涉水救援运力 |
+
+把人数调大、把运力调小，冲突会更早爆发，适合演示"AI 如何取舍"；反过来则演示"资源充足时如何统筹"。
+
 新增场景只需在 `app/data/scenarios.py` 写一个 `_build_xxx(seed, severity)` 并注册进 `SCENARIOS`，前端下拉框与 API 自动识别，无需改动规则引擎。
 
 ## 3. 架构
@@ -124,6 +134,13 @@ Agent 只输出结构化建议，资源够不够、道路通不通、行动冲�
 - **路线 B（实验性，feature flag，默认关闭）**：**独立的"决策 Agent"**。它接收六份结构化提议 + 当前资源快照，以**利益最大化**为目标函数（如：受困人员覆盖数最大、平均响应时间最小、资源代价最低）产出整体调度方案，再交由规则引擎校验；校验不通过则带失败原因回环重试，最多 N 轮。
 
 实现要求：路线 B 作为可开关模块存在，**默认关闭**，用于原型阶段与路线 A 做同一场景的对比评估。开关状态与评估结论记录在此文档。
+
+**live 实测暴露的两个坑，已修**：
+
+1. 模型有时不按 schema 输出，直接把**单个行动对象**当顶层返回（没有 `plan` 数组）。原实现会判"空方案"并立即回退路线 A——8 次实测里有 4 次。现在 `normalize_plan()` 兼容 `plan / actions / decisions / plan_items`、裸对象、映射结构、中文枚举，并对单条非法项做丢弃而非整份失败。
+2. 即使能解析，只返回 1 项行动也不算"决策"。现在要求 **至少 3 项、覆盖多个部门**，否则带着"方案不完整"的反馈重试；重试仍失败才回退路线 A（回退时前端会显示完整轨迹，不会静默降级）。
+
+修复后 8 次实测：**0 次回退**，方案项数 4–6。
 
 ## 5. 演示规范（Demo Spec）
 
@@ -301,8 +318,8 @@ scripts/make-wheelhouse.ps1  生成 Linux 离线依赖包
 | GET | `/` | 单页前端 |
 | GET | `/api/health` | 健康检查与当前模式 |
 | GET | `/api/scenarios` | 可用场景列表（id / 名称 / 一句话说明） |
-| GET | `/api/scenario?scenario=&seed=&severity=` | 仅生成场景快照 |
-| POST | `/api/simulate?scenario=&seed=&severity=&decision_agent=` | 同步执行完整模拟 |
+| GET | `/api/scenario?scenario=&seed=&severity=&scale=&buses=&boats=` | 仅生成场景快照 |
+| POST | `/api/simulate?scenario=&seed=&severity=&scale=&buses=&boats=&decision_agent=` | 同步执行完整模拟 |
 | GET | `/api/simulate/stream?...` | SSE 事件流：scenario / proposal ×6 / resolution / result |
 | GET | `/api/history?limit=` | 历史运行记录 |
 

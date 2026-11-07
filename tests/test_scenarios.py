@@ -5,10 +5,16 @@ import asyncio
 import pytest
 
 from app.agents.coordinator import run_simulation
-from app.data.scenarios import DEFAULT_SCENARIO, SCENARIOS, build_scenario, list_scenarios
+from app.data.scenarios import (
+    DEFAULT_SCENARIO,
+    SCENARIOS,
+    ScenarioOptions,
+    build_scenario,
+    list_scenarios,
+)
 from app.engine.rules import resolve
 from app.agents.mock import mock_proposal
-from app.models import ALL_AGENTS
+from app.models import ALL_AGENTS, Proposal, ResourceRequest
 
 SCENARIO_IDS = list(SCENARIOS)
 
@@ -77,3 +83,55 @@ def test_assign_focus_spreads_agents_across_zones():
     assert focus["traffic"] != focus["student"], "交通与学生事务不应被分到同一个重点区域"
     assert "dorm_a" in focus["traffic"]
     assert "（" in focus["medical"]
+
+
+# ---- 可调规模与运力 ----
+
+
+def test_population_scale_multiplies_trapped_and_population():
+    base = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    doubled = build_scenario(seed=7, severity=3, scenario="rainstorm", options=ScenarioOptions(population_scale=2.0))
+    assert doubled.total_trapped() == pytest.approx(base.total_trapped() * 2, rel=0.02)
+    assert doubled.event["population_scale"] == 2.0
+    for zone in doubled.zones.values():
+        base_zone = base.zones[zone["id"]]
+        assert zone["population"] >= base_zone["population"]
+
+
+def test_vehicle_override_changes_resources_only():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm", options=ScenarioOptions(buses=6, boats=3))
+    assert state.resources["buses"] == 6
+    assert state.resources["boats"] == 3
+    # 其他资源保持场景默认
+    assert state.resources["medical_kits"] == build_scenario(seed=7, severity=3).resources["medical_kits"]
+
+
+def test_options_are_clamped():
+    opts = ScenarioOptions.clamp(population_scale=99, buses=999, boats=-5)
+    assert opts.population_scale == 5.0
+    assert opts.buses == 20
+    assert opts.boats == 0
+
+
+def test_more_buses_relieves_bus_contention_when_both_sides_ask_less():
+    """运力充足时，两个撤离请求可以同时通过——这正是“智能调度”演示的关键。"""
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm", options=ScenarioOptions(buses=6))
+    proposals = [
+        Proposal(
+            agent="traffic",
+            priority="high",
+            target_area="dorm_a",
+            action="evacuate",
+            resource_required=ResourceRequest(buses=2),
+        ),
+        Proposal(
+            agent="student",
+            priority="high",
+            target_area="dorm_b",
+            action="evacuate",
+            resource_required=ResourceRequest(buses=2),
+        ),
+    ]
+    resolution = resolve(state, proposals)
+    assert len(resolution.items) == 2
+    assert not resolution.rejected

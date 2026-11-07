@@ -1,4 +1,4 @@
-"""FastAPI 入口：页面、场景、模拟接口、SSE 事件流、历史记录。"""
+﻿"""FastAPI 入口：页面、场景、模拟接口、SSE 事件流、历史记录。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.agents.coordinator import run_simulation, stream_simulation
 from app.config import settings
-from app.data.scenarios import DEFAULT_SCENARIO, SCENARIOS, build_scenario, list_scenarios
+from app.data.scenarios import DEFAULT_SCENARIO, SCENARIOS, ScenarioOptions, build_scenario, list_scenarios
 from app.engine.simulator import snapshot
 from app.storage import init_db, list_runs
 
@@ -30,6 +30,10 @@ app = FastAPI(title="CampusMind", version="0.2.0", lifespan=lifespan)
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _options(scale: float, buses: int | None, boats: int | None) -> ScenarioOptions:
+    return ScenarioOptions.clamp(population_scale=scale, buses=buses, boats=boats)
 
 
 def _check_scenario(scenario: str) -> str:
@@ -61,8 +65,11 @@ async def scenario(
     seed: int = Query(7, ge=0, le=9999),
     severity: int = Query(3, ge=1, le=3),
     scenario: str = Query(DEFAULT_SCENARIO),
+    scale: float = Query(1.0, ge=0.1, le=5.0),
+    buses: int | None = Query(None, ge=0, le=20),
+    boats: int | None = Query(None, ge=0, le=10),
 ) -> dict:
-    state = build_scenario(seed, severity, _check_scenario(scenario))
+    state = build_scenario(seed, severity, _check_scenario(scenario), _options(scale, buses, boats))
     return {**snapshot(state), "mode": settings.mode_label}
 
 
@@ -72,9 +79,16 @@ async def simulate(
     severity: int = Query(3, ge=1, le=3),
     decision_agent: bool = Query(False),
     scenario: str = Query(DEFAULT_SCENARIO),
+    scale: float = Query(1.0, ge=0.1, le=5.0),
+    buses: int | None = Query(None, ge=0, le=20),
+    boats: int | None = Query(None, ge=0, le=10),
 ) -> dict:
     return await run_simulation(
-        seed=seed, severity=severity, decision_agent=decision_agent, scenario=_check_scenario(scenario)
+        seed=seed,
+        severity=severity,
+        decision_agent=decision_agent,
+        scenario=_check_scenario(scenario),
+        options=_options(scale, buses, boats),
     )
 
 
@@ -88,12 +102,17 @@ async def simulate_stream(
     severity: int = Query(3, ge=1, le=3),
     decision_agent: bool = Query(False),
     scenario: str = Query(DEFAULT_SCENARIO),
+    scale: float = Query(1.0, ge=0.1, le=5.0),
+    buses: int | None = Query(None, ge=0, le=20),
+    boats: int | None = Query(None, ge=0, le=10),
 ) -> StreamingResponse:
     _check_scenario(scenario)
 
     async def generator():
         try:
-            async for event in stream_simulation(seed, severity, decision_agent, scenario):
+            async for event in stream_simulation(
+                seed, severity, decision_agent, scenario, _options(scale, buses, boats)
+            ):
                 yield _sse(event)
                 await asyncio.sleep(0.05)  # 让前端能真正“逐条浮现”，而不是瞬间刷完
         except Exception as exc:  # 推送到前端并保留服务端不崩
