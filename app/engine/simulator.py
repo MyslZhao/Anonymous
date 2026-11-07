@@ -131,6 +131,51 @@ def _zone_status(zone: dict) -> str:
     return "normal"
 
 
+BASELINE_WINDOW_MINUTES = 30
+
+
+def baseline_outcome(state: SimState) -> dict:
+    """无干预推演：不做任何调度，30 分钟内风险如何演化。
+
+    这是给对照用的粗粒度模型，不是真实伤亡预测：
+      风险暴露人数 = 被困人数 × (0.15 + 0.35 × 危险度/10)
+      预计伤亡人数 = 被困人数 × (0.03 + 0.12 × 危险度/10)
+    若该区域既到不了医务室也到不了避难所（孤立），恶化系数再乘 1.15。
+    """
+    at_risk = 0.0
+    casualties = 0.0
+    isolated = 0
+    for zone in state.zones.values():
+        trapped = zone["trapped"]
+        if trapped <= 0:
+            continue
+        h = min(1.0, zone["hazard"] / 10)
+        factor = 0.15 + 0.35 * h
+        if not (state.path_exists(zone["id"], "clinic") or state.path_exists(zone["id"], "gym")):
+            factor *= 1.15
+            isolated += 1
+        at_risk += trapped * factor
+        casualties += trapped * (0.03 + 0.12 * h)
+
+    return {
+        "window_minutes": BASELINE_WINDOW_MINUTES,
+        "at_risk": round(at_risk),
+        "casualties": round(casualties),
+        "isolated_zones": isolated,
+        "trapped_total": state.total_trapped(),
+        "note": "无干预推演：粗粒度模型，用于对照，不是真实伤亡预测",
+    }
+
+
+def risk_coverage(baseline: dict, metrics: Metrics) -> float:
+    """本方案覆盖了多少"无干预下会恶化的风险暴露"。"""
+    at_risk = baseline.get("at_risk", 0)
+    if not at_risk:
+        return 0.0
+    handled = metrics.rescued + metrics.stabilized + metrics.supported * 0.2
+    return round(min(1.0, handled / at_risk), 3)
+
+
 def summarize_item(item: PlanItem, state: SimState) -> dict:
     """方案项的展示文本。"""
     target = state.zone_name(item.target_area)

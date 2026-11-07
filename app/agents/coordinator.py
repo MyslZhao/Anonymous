@@ -10,7 +10,7 @@ from app.agents.roles import AGENT_META
 from app.config import settings
 from app.data.scenarios import DEFAULT_SCENARIO, ScenarioOptions, build_scenario
 from app.engine.rules import resolve
-from app.engine.simulator import apply_plan, snapshot, summarize_item
+from app.engine.simulator import apply_plan, baseline_outcome, risk_coverage, snapshot, summarize_item
 from app.models import ALL_AGENTS, Proposal
 from app.storage import save_run
 from app.engine.state import SimState
@@ -123,6 +123,45 @@ async def stream_simulation(
         yield {"type": "proposal", "data": proposal_payload(state, proposal, raw)}
     proposals.sort(key=lambda p: ALL_AGENTS.index(p.agent))
 
+    baseline = baseline_outcome(state)
+
+    # 路线 A 的“驳回后重申请”：被驳回的角色带着驳回原因再提一次，最多 settings.route_a_retry 轮
+    revisions: list[dict] = []
+    for round_no in range(1, settings.route_a_retry + 1):
+        preview = resolve(state, proposals)
+        if not preview.rejected:
+            break
+        changed = False
+        for rejection in preview.rejected:
+            index = next((i for i, p in enumerate(proposals) if p.agent == rejection.agent), None)
+            if index is None:
+                continue
+            old = proposals[index]
+            feedback = f"你提出的 {old.action} @ {old.target_area}（{old.reason}）被驳回：{rejection.reason}"
+            try:
+                revised, raw = await propose(old.agent, state, focus_map.get(old.agent), feedback)
+            except Exception:
+                continue
+            if (
+                revised.action == old.action
+                and revised.target_area == old.target_area
+                and revised.resource_required.as_dict() == old.resource_required.as_dict()
+            ):
+                continue  # 与上一版完全相同，重申请没有意义（mock 模式必走这条）
+            proposals[index] = revised
+            changed = True
+            entry = {
+                "round": round_no,
+                "agent": old.agent,
+                "reason": rejection.reason,
+                "old": proposal_payload(state, old),
+                "new": proposal_payload(state, revised, raw),
+            }
+            revisions.append(entry)
+            yield {"type": "revision", "data": entry}
+        if not changed:
+            break
+
     comparison = None
     if decision_agent:
         state_a = build_scenario(seed, severity, scenario, options)
@@ -169,6 +208,9 @@ async def stream_simulation(
             "effects": effects,
             "metrics": metrics.model_dump(),
             "comparison": comparison,
+            "baseline": baseline,
+            "risk_covered": risk_coverage(baseline, metrics),
+            "revisions": revisions,
             "state": snapshot(state),
             "mode": settings.mode_label,
             "seed": seed,

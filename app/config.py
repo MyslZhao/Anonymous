@@ -43,6 +43,8 @@ class Settings:
         self.timeout: float = float(os.getenv("AI_TIMEOUT", "60"))
         self.db_path: str = os.getenv("DB_PATH", str(BASE_DIR / "data" / "campusmind.db"))
         self.max_retry_rounds: int = max(0, _env_int("DECISION_MAX_RETRY", 2))
+        # 路线 A：被驳回的角色带原因重新申请，最多几轮（0 = 关闭）
+        self.route_a_retry: int = max(0, _env_int("ROUTE_A_RETRY", 1))
 
     @property
     def mock_mode(self) -> bool:

@@ -31,6 +31,13 @@ def test_route_a_pipeline_end_to_end():
     assert 0 < metrics["coverage"] <= 1
     assert result["comparison"] is None
 
+    # 反事实对照：无干预基线必须给出可对照的数字
+    baseline = result["baseline"]
+    assert baseline["at_risk"] > 0
+    assert baseline["casualties"] > 0
+    assert 0 < result["risk_covered"] <= 1
+    assert result["revisions"] == []  # mock 下重申请不应空转
+
 
 def test_route_b_produces_comparison_and_avoids_bus_fight():
     payload = asyncio.run(run_simulation(seed=7, severity=3, decision_agent=True))

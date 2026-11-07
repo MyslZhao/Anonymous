@@ -126,6 +126,22 @@ def test_unknown_zone_is_rejected():
     assert resolution.rejected[0].reason == "目标区域不存在"
 
 
+def test_notify_students_ignores_requested_resources():
+    """广播通知不占资源，模型给它挂志愿者也不该被驳回。"""
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm")
+    proposal = Proposal(
+        agent="command",
+        priority="high",
+        target_area="gate",
+        action="notify_students",
+        resource_required=ResourceRequest(volunteers=30, buses=5),
+    )
+    resolution = resolve(state, [proposal])
+    assert len(resolution.items) == 1
+    assert not resolution.items[0].resources
+    assert resolution.ledger == state.resources
+
+
 def test_evacuate_from_isolated_zone_is_rejected():
     state = build_scenario(seed=7, severity=3, scenario="rainstorm")
     state.edges["e_road2"].update(open=False, reason="测试用：切断唯一通道")

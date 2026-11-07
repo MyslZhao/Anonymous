@@ -45,3 +45,29 @@ def test_shape_issue_accepts_valid_targets(action, target):
     state = build_scenario(seed=7, severity=3, scenario="rainstorm")
     proposal = Proposal(agent="medical", priority="medium", target_area=target, action=action)
     assert shape_issue(state, proposal) is None
+
+
+# ---- 角色边界 ----
+
+
+def test_student_cannot_request_medical_team():
+    from app.agents.roles import role_issue
+
+    issue = role_issue("student", "send_medical_team")
+    assert issue and "不允许" in issue
+
+
+def test_security_may_evacuate_but_not_dispatch_supply():
+    from app.agents.roles import role_issue
+
+    assert role_issue("security", "evacuate") is None
+    assert role_issue("security", "dispatch_supply") is not None
+
+
+@pytest.mark.parametrize("role", ["command", "medical", "security", "logistics", "traffic", "student"])
+def test_mock_proposals_stay_inside_role_boundaries(role):
+    from app.agents.mock import mock_proposal
+    from app.agents.roles import role_issue
+
+    state = build_scenario(seed=7, severity=3, scenario="fire")
+    assert role_issue(role, mock_proposal(role, state).action) is None

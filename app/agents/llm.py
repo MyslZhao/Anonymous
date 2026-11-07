@@ -1,4 +1,4 @@
-"""Agent 决策层：真实 DeepSeek 调用 + 解析校验 + 失败降级。
+﻿"""Agent 决策层：真实 DeepSeek 调用 + 解析校验 + 失败降级。
 
 约束：任何模型输出都必须先被解析成 Proposal，才可能进入规则引擎。
 """
@@ -13,6 +13,7 @@ import httpx
 
 from app.agents.mock import mock_proposal
 from app.agents.prompts import SYSTEM_PROMPTS, build_user_message
+from app.agents.roles import role_issue
 from app.config import settings
 from app.engine.state import SimState
 from app.models import Proposal
@@ -87,8 +88,13 @@ async def _chat(messages: list[dict], temperature: float = 0.2, max_tokens: int 
         raise AgentError(f"响应结构异常：{body}") from exc
 
 
-async def propose(role: str, state: SimState, focus: str | None = None) -> tuple[Proposal, str]:
-    """向指定角色索取一条结构化建议，返回 (proposal, 原始输出)。"""
+async def propose(
+    role: str, state: SimState, focus: str | None = None, feedback: str | None = None
+) -> tuple[Proposal, str]:
+    """向指定角色索取一条结构化建议，返回 (proposal, 原始输出)。
+
+    feedback 非空时表示“这是重新申请”：上一版建议被规则引擎驳回，附原因要求改一版。
+    """
     if settings.mock_mode:
         return mock_proposal(role, state), "[mock] 离线规则生成"
 
@@ -97,9 +103,15 @@ async def propose(role: str, state: SimState, focus: str | None = None) -> tuple
         "你是多 Agent 应急系统中的一个专业角色，输出会被程序严格校验，"
         "资源不足或道路不通的行动会被直接驳回。"
     )
+    user_message = build_user_message(state, focus)
+    if feedback:
+        user_message += (
+            f"\n\n【你的上一条建议被驳回】\n{feedback}\n"
+            "请换一个当前确实可执行、资源不超过剩余库存的行动，重新输出一个 JSON 对象。"
+        )
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": build_user_message(state, focus)},
+        {"role": "user", "content": user_message},
     ]
 
     async with _SEMAPHORE:
@@ -108,7 +120,7 @@ async def propose(role: str, state: SimState, focus: str | None = None) -> tuple
             try:
                 raw = await _chat(messages)
                 proposal = parse_proposal(raw, role)
-                issue = shape_issue(state, proposal)
+                issue = shape_issue(state, proposal) or role_issue(role, proposal.action)
                 if issue:
                     raise AgentError(issue)
                 return proposal, raw

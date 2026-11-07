@@ -111,7 +111,8 @@ def resolve(state: SimState, proposals: list[Proposal]) -> Resolution:
 
     for proposal in ranked:
         benefit = benefit_estimate(state, proposal)
-        request = proposal.resource_required.as_dict()
+        # 广播通知不占用实体资源，模型给 notify_students 挂资源一律忽略
+        request = {} if proposal.action == "notify_students" else proposal.resource_required.as_dict()
         label = _target_label(state, proposal)
 
         # ---- 1. 资源校验 ----

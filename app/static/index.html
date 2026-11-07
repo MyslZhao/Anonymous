@@ -182,6 +182,11 @@
         <h2><span class="dot"></span>执行效果</h2>
         <div class="card-body" id="effects"><div class="empty">等待模拟完成…</div></div>
       </div>
+
+      <div class="card">
+        <h2><span class="dot"></span>无干预对照</h2>
+        <div class="card-body" id="baseline"><div class="empty">等待模拟完成…</div></div>
+      </div>
     </section>
 
     <section>
@@ -217,7 +222,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   zones: {}, edges: [], edgesByName: {}, proposals: 0, finished: false, es: null,
-  hazardLabel: "危险度", trappedLabel: "被困"
+  hazardLabel: "危险度", trappedLabel: "被困", agentEls: {}
 };
 
 const ACTION_TEXT = {
@@ -327,10 +332,12 @@ function highlight(targetId, color) {
 function reset() {
   state.proposals = 0;
   state.finished = false;
+  state.agentEls = {};
   $("agents").innerHTML = "";
   $("conflicts").innerHTML = '<div class="empty">暂无冲突</div>';
   $("plan").innerHTML = '<div class="empty">等待裁决…</div>';
   $("effects").innerHTML = '<div class="empty">等待模拟完成…</div>';
+  $("baseline").innerHTML = '<div class="empty">等待模拟完成…</div>';
   $("compareCard").style.display = "none";
   $("decisionCard").style.display = "none";
   $("trace").textContent = "";
@@ -358,25 +365,40 @@ function resName(k) {
   return { medical_kits: "医疗包", volunteers: "志愿者", buses: "校车", boats: "冲锋舟", barricades: "路障" }[k] || k;
 }
 
-function renderProposal(p) {
-  const el = document.createElement("div");
-  el.className = "agent";
-  el.style.setProperty("--c", p.color);
+function agentCardHtml(p, revised) {
   const res = Object.entries(p.resources || {}).map(([k, v]) => `<span>${resName(k)} ×${v}</span>`).join("");
-  el.innerHTML = `
+  return `
     <div class="head">
       <div class="icon">${p.icon}</div>
       <div class="name">${p.name}</div>
+      ${revised ? '<div class="pri" style="color:#fbbf24;border-color:#78350f;background:#231a08">已重申请</div>' : ""}
       <div class="pri ${p.priority}">${priText(p.priority)}</div>
     </div>
     <div class="act">提出 <b>${p.action_text}</b> → ${p.target}</div>
     <div class="reason">${p.reason || "—"}</div>
     ${res ? `<div class="res">${res}</div>` : ""}`;
+}
+
+function renderProposal(p) {
+  const el = document.createElement("div");
+  el.className = "agent";
+  el.style.setProperty("--c", p.color);
+  el.innerHTML = agentCardHtml(p, false);
   $("agents").appendChild(el);
+  state.agentEls[p.agent] = el;
   requestAnimationFrame(() => el.classList.add("in"));
   state.proposals += 1;
   $("agentCount").textContent = state.proposals + "/6";
   highlight(p.target === p.target_id ? p.target_id : (p.target_id || p.target), p.color);
+}
+
+function renderRevision(d) {
+  const el = state.agentEls[d.agent];
+  if (!el) return;
+  el.innerHTML = agentCardHtml(d.new, true);
+  el.classList.remove("in");
+  requestAnimationFrame(() => el.classList.add("in"));
+  highlight(d.new.target_id || d.new.target, "#fbbf24");
 }
 
 function priText(p) { return { high: "高优先", medium: "中优先", low: "低优先" }[p] || p; }
@@ -430,6 +452,17 @@ function renderResult(d) {
     ? d.effects.map(e => `<div class="effect"><i>✓</i><span>${e.text}${e.zone ? "（" + e.zone + "）" : ""}</span></div>`).join("")
     : '<div class="empty">没有产生实际效果</div>';
 
+  if (d.baseline) {
+    const b = d.baseline;
+    const covered = Math.round((d.risk_covered || 0) * 100);
+    const isolated = b.isolated_zones ? `（其中 ${b.isolated_zones} 个区域已失去通道）` : "";
+    $("baseline").innerHTML = `
+      <div class="effect"><i style="color:#f87171">✕</i><span>不介入：${b.window_minutes} 分钟内 ${b.at_risk} 人陷入危险${isolated}，预计 ${b.casualties} 人伤亡</span></div>
+      <div class="effect"><i>✓</i><span>本方案：转移 ${d.metrics.rescued} 人、医疗处置 ${d.metrics.stabilized} 人、物资覆盖 ${d.metrics.supported} 人</span></div>
+      <div class="effect"><i>▮</i><span>风险覆盖 <b>${covered}%</b></span></div>
+      <div class="empty" style="margin-top:6px">${b.note}</div>`;
+  }
+
   if (d.comparison) {
     const a = d.comparison.route_a, b = d.comparison.route_b;
     $("compareCard").style.display = "";
@@ -452,6 +485,10 @@ function handle(event) {
   const { type, data } = event;
   if (type === "scenario") { renderScenario(data); setStatus("六角色并行分析中…", true); }
   else if (type === "proposal") { renderProposal(data); }
+  else if (type === "revision") {
+    renderRevision(data);
+    setStatus("有角色被驳回，正在带原因重新申请…", true);
+  }
   else if (type === "decision") {
     $("decisionCard").style.display = "";
     $("trace").textContent = data.trace.join("\n");

@@ -14,3 +14,33 @@ AGENT_META: dict[str, dict] = {
 
 def agent_name(agent: str) -> str:
     return AGENT_META.get(agent, {}).get("name", agent)
+
+
+# 每个角色允许提出的行动。越权提议（例如“学生事务”申请医疗队）会被直接打回，
+# 因为演示时评委一眼就能看出这不像该部门的职责。
+ROLE_ACTIONS: dict[str, set[str]] = {
+    "command": {"notify_students", "open_route", "dispatch_supply", "idle"},
+    "medical": {"send_medical_team", "notify_students", "idle"},
+    "security": {"close_road", "evacuate", "notify_students", "idle"},
+    "logistics": {"dispatch_supply", "notify_students", "idle"},
+    "traffic": {"evacuate", "open_route", "notify_students", "idle"},
+    "student": {"evacuate", "notify_students", "idle"},
+}
+
+ACTION_LABELS = {
+    "send_medical_team": "医疗支援",
+    "close_road": "道路管控",
+    "evacuate": "人员转移",
+    "dispatch_supply": "物资投送",
+    "open_route": "道路抢通",
+    "notify_students": "信息发布",
+    "idle": "待命",
+}
+
+
+def role_issue(role: str, action: str) -> str | None:
+    allowed = ROLE_ACTIONS.get(role)
+    if allowed is None or action in allowed:
+        return None
+    labels = "、".join(ACTION_LABELS.get(a, a) for a in sorted(allowed))
+    return f"你的角色不允许提出 {ACTION_LABELS.get(action, action)}，只能从这些行动中选：{labels}"
