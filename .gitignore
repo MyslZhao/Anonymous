@@ -1,0 +1,19 @@
+*.pyc
+
+# Python 虚拟环境与缓存
+.venv/
+__pycache__/
+.pytest_cache/
+
+# 本地配置与密钥（禁止提交）
+.env
+
+# 运行期数据（SQLite 存档）
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# 编辑器
+.vscode/
+.idea/

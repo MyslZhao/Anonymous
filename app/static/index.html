@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CampusMind · 校园多 Agent 应急协同决策</title>
+<style>
+  :root{
+    --bg:#0b1120; --panel:#111a2e; --panel-2:#0e1626; --border:#22304d;
+    --text:#e2e8f0; --muted:#8798b3; --accent:#38bdf8; --danger:#f43f5e;
+    --warn:#fbbf24; --ok:#34d399;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:radial-gradient(1200px 600px at 20% -10%,#16233c 0%,var(--bg) 55%);
+    color:var(--text); font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; font-size:14px;
+  }
+  header{display:flex;align-items:center;gap:14px;padding:16px 22px;border-bottom:1px solid var(--border);
+    background:rgba(11,17,32,.7);backdrop-filter:blur(8px);position:sticky;top:0;z-index:20}
+  h1{font-size:17px;margin:0;letter-spacing:.5px}
+  h1 span{color:var(--accent)}
+  .badge{font-size:11px;padding:3px 9px;border-radius:999px;border:1px solid var(--border);color:var(--muted)}
+  .badge.live{color:var(--ok);border-color:#1d4d3f}
+  .spacer{flex:1}
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:14px 22px;border-bottom:1px solid var(--border)}
+  label.field{display:flex;flex-direction:column;gap:5px;font-size:11px;color:var(--muted)}
+  select,input[type=number],input[type=text]{
+    background:var(--panel-2);border:1px solid var(--border);color:var(--text);
+    border-radius:8px;padding:7px 9px;font-size:13px;outline:none;min-width:96px}
+  select:focus,input:focus{border-color:var(--accent)}
+  button{background:linear-gradient(180deg,#2a90c9,#1c6f9e);border:1px solid #3ba5dd;color:#fff;
+    padding:9px 18px;border-radius:9px;font-size:13px;cursor:pointer;font-weight:600;transition:.15s}
+  button:hover{filter:brightness(1.12)}
+  button:disabled{opacity:.45;cursor:not-allowed;filter:none}
+  button.ghost{background:transparent;border-color:var(--border);color:var(--muted);font-weight:500}
+  .toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);
+    border:1px solid var(--border);border-radius:9px;padding:8px 11px;cursor:pointer;user-select:none}
+  .toggle input{accent-color:var(--accent)}
+  main{padding:18px 22px 40px;max-width:1560px;margin:0 auto}
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+  .kpi{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
+  .kpi .k{font-size:11px;color:var(--muted);margin-bottom:6px}
+  .kpi .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+  .kpi .v small{font-size:12px;color:var(--muted);font-weight:400}
+  .layout{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:16px;align-items:start}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:16px}
+  .card > h2{margin:0;padding:12px 16px;font-size:12px;letter-spacing:1px;color:var(--muted);
+    text-transform:uppercase;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+  .card > h2 .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+  .card-body{padding:14px 16px}
+  .event-title{font-size:15px;font-weight:700;margin-bottom:6px}
+  .event-desc{color:var(--muted);font-size:12.5px;line-height:1.6}
+  .resources{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .chip{background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:5px 9px;font-size:12px}
+  .chip b{color:var(--accent)}
+  svg{display:block;width:100%;height:auto}
+  .agent-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .agent{border:1px solid var(--border);border-radius:12px;padding:11px 12px;background:var(--panel-2);
+    opacity:.25;transform:translateY(6px);transition:.35s;position:relative;overflow:hidden}
+  .agent.in{opacity:1;transform:none}
+  .agent::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--c,#64748b)}
+  .agent .head{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .agent .icon{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:13px;
+    color:#0b1120;background:var(--c,#94a3b8);font-weight:700}
+  .agent .name{font-weight:600;font-size:13px}
+  .agent .pri{margin-left:auto;font-size:10px;padding:2px 7px;border-radius:999px;border:1px solid var(--border);color:var(--muted)}
+  .agent .pri.high{color:#fecdd3;border-color:#7f1d3a;background:#3f1220}
+  .agent .act{font-size:13px;margin-bottom:5px}
+  .agent .act b{color:var(--accent)}
+  .agent .reason{font-size:11.5px;color:var(--muted);line-height:1.55}
+  .agent .res{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+  .agent .res span{font-size:10.5px;background:#0a1322;border:1px solid var(--border);border-radius:6px;padding:2px 6px;color:#9fb3cf}
+  .conflict{border-left:3px solid var(--warn);background:#1d1a10;border-radius:8px;padding:9px 11px;margin-bottom:8px}
+  .conflict.route{border-color:var(--danger);background:#1f1116}
+  .conflict.resource{border-color:#fb923c;background:#1d1710}
+  .conflict .k{font-size:10px;color:var(--muted);letter-spacing:.6px;margin-bottom:3px}
+  .conflict .d{font-size:12.5px;line-height:1.55;margin-bottom:4px}
+  .conflict .r{font-size:11.5px;color:var(--ok)}
+  .plan-item{display:flex;gap:9px;padding:8px 0;border-bottom:1px dashed #1b2740;font-size:12.5px}
+  .plan-item:last-child{border-bottom:none}
+  .plan-item .t{color:var(--accent);min-width:96px;font-weight:600}
+  .plan-item .m{color:var(--muted)}
+  .effect{display:flex;gap:9px;font-size:12.5px;padding:6px 0;color:#c7d5e8}
+  .effect i{font-style:normal;color:var(--ok)}
+  .trace{font-size:12px;line-height:1.7;color:#b9c8dd;background:#0a1322;border:1px solid var(--border);
+    border-radius:10px;padding:10px 12px;white-space:pre-wrap}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{padding:7px 6px;border-bottom:1px solid #1b2740;text-align:left}
+  th{color:var(--muted);font-weight:500;font-size:11px}
+  td.num{font-variant-numeric:tabular-nums}
+  .empty{color:#5d6c85;font-size:12.5px;padding:8px 0}
+  .status{font-size:12px;color:var(--muted)}
+  .status .pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);
+    margin-right:6px;animation:blink 1.1s infinite}
+  @keyframes blink{0%,100%{opacity:.25}50%{opacity:1}}
+  @keyframes pop{from{opacity:.25;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .pulse-ring{animation:ring 1.6s infinite}
+  @keyframes ring{0%{opacity:.9;stroke-width:3}70%{opacity:0;stroke-width:12}100%{opacity:0}}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;padding:8px 16px 14px;font-size:11px;color:var(--muted)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  .cols2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:1100px){.layout{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.agent-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>CampusMind <span>·</span> 校园多 Agent 应急协同决策</h1>
+  <span class="badge" id="modeBadge">loading…</span>
+  <div class="spacer"></div>
+  <span class="status" id="status">等待启动</span>
+</header>
+
+<div class="controls">
+  <label class="field">暴雨等级
+    <select id="severity">
+      <option value="1">蓝色预警</option>
+      <option value="2">黄色预警</option>
+      <option value="3" selected>橙色预警</option>
+    </select>
+  </label>
+  <label class="field">随机种子
+    <input type="number" id="seed" value="7" min="0" max="9999" />
+  </label>
+  <label class="toggle" title="路线 B：独立决策 Agent 以整体利益最大化重新编排方案">
+    <input type="checkbox" id="decision" /> 决策 Agent（路线 B）
+  </label>
+  <button id="startBtn">开始模拟</button>
+  <button class="ghost" id="rerollBtn">换一个种子</button>
+  <span class="status" id="hint">六角色并发出方案 → 规则引擎裁决 → 生成可执行指令</span>
+</div>
+
+<main>
+  <div class="kpis">
+    <div class="kpi"><div class="k">受困总数</div><div class="v" id="kpiTrapped">—</div></div>
+    <div class="kpi"><div class="k">成功转移</div><div class="v" id="kpiRescued">—</div></div>
+    <div class="kpi"><div class="k">救援覆盖率</div><div class="v" id="kpiCoverage">—</div></div>
+    <div class="kpi"><div class="k">冲突拦截</div><div class="v" id="kpiConflicts">—</div></div>
+    <div class="kpi"><div class="k">预计响应</div><div class="v" id="kpiTime">—</div></div>
+  </div>
+
+  <div class="layout">
+    <section>
+      <div class="card">
+        <h2><span class="dot"></span>突发事件</h2>
+        <div class="card-body">
+          <div class="event-title" id="eventTitle">尚未生成场景</div>
+          <div class="event-desc" id="eventDesc">点击「开始模拟」，系统将生成暴雨积水、道路阻断与被困人员数据。</div>
+          <div class="resources" id="resources"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2><span class="dot"></span>校园态势图</h2>
+        <svg id="map" viewBox="0 0 900 570" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="legend">
+          <span><i style="background:#334155"></i>区域</span>
+          <span><i style="background:#38bdf8"></i>积水</span>
+          <span><i style="background:#f43f5e"></i>有被困人员</span>
+          <span><i style="background:#ef4444"></i>道路阻断</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2><span class="dot"></span>执行效果</h2>
+        <div class="card-body" id="effects"><div class="empty">等待模拟完成…</div></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="card">
+        <h2><span class="dot"></span>Agent 决策流 <span class="badge" id="agentCount">0/6</span></h2>
+        <div class="card-body"><div class="agent-grid" id="agents"></div></div>
+      </div>
+
+      <div class="card" id="decisionCard" style="display:none">
+        <h2><span class="dot"></span>决策 Agent 轨迹</h2>
+        <div class="card-body"><div class="trace" id="trace"></div></div>
+      </div>
+
+      <div class="card">
+        <h2><span class="dot"></span>冲突与裁决</h2>
+        <div class="card-body" id="conflicts"><div class="empty">暂无冲突</div></div>
+      </div>
+
+      <div class="card">
+        <h2><span class="dot"></span>可执行方案 <span class="badge" id="planCount">0 项</span></h2>
+        <div class="card-body" id="plan"><div class="empty">等待裁决…</div></div>
+      </div>
+
+      <div class="card" id="compareCard" style="display:none">
+        <h2><span class="dot"></span>路线 A / B 对比</h2>
+        <div class="card-body" id="compare"></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { zones: {}, edges: [], edgesByName: {}, proposals: 0, finished: false, es: null };
+
+const ACTION_TEXT = {
+  send_medical_team: "医疗支援", close_road: "道路管控", evacuate: "人员转移",
+  dispatch_supply: "物资投送", open_route: "道路抢通", notify_students: "信息发布", idle: "待命"
+};
+
+fetch("/api/health").then(r => r.json()).then(d => {
+  const b = $("modeBadge");
+  b.textContent = d.mock ? "离线模拟模式（Mock）" : "在线模式 · " + d.mode;
+  b.classList.toggle("live", !d.mock);
+}).catch(() => { $("modeBadge").textContent = "后端未连接"; });
+
+function setStatus(text, busy) {
+  $("status").innerHTML = (busy ? '<span class="pulse"></span>' : "") + text;
+}
+
+/* ---------------- 地图 ---------------- */
+function drawMap(data) {
+  state.zones = {};
+  const svg = $("map");
+  const defs = `<defs>
+    <linearGradient id="waterGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity=".55"/>
+      <stop offset="100%" stop-color="#0284c7" stop-opacity=".85"/>
+    </linearGradient>
+  </defs>`;
+  let edges = "";
+  let zones = "";
+
+  data.zones.forEach(z => { state.zones[z.id] = z; });
+
+  data.edges.forEach(e => {
+    const a = state.zones[e.a], b = state.zones[e.b];
+    if (!a || !b) return;
+    const closed = !e.open;
+    edges += `<line id="edge-${e.id}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"
+      stroke="${closed ? "#ef4444" : "#2b3b58"}" stroke-width="${closed ? 3 : 4}"
+      stroke-linecap="round" ${closed ? 'stroke-dasharray="7 6"' : ""} opacity="${closed ? .95 : .8}"/>`;
+    if (closed) {
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      edges += `<text x="${mx}" y="${my - 7}" fill="#fca5a5" font-size="11" text-anchor="middle">${e.name}·阻断</text>`;
+    }
+  });
+
+  data.zones.forEach(z => {
+    const trapped = z.trapped > 0;
+    const w = 118, h = 62, x = z.x - w / 2, y = z.y - h / 2;
+    const fillH = Math.min(h - 4, (z.water / 10) * h);
+    zones += `<g id="zone-${z.id}" class="zone">
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="12"
+        fill="#16223a" stroke="${trapped ? "#f43f5e" : "#2c3d5c"}" stroke-width="${trapped ? 2 : 1.5}"/>
+      <clipPath id="clip-${z.id}"><rect x="${x + 2}" y="${y + 2}" width="${w - 4}" height="${h - 4}" rx="10"/></clipPath>
+      <rect x="${x + 2}" y="${y + h - 2 - fillH}" width="${w - 4}" height="${fillH}" fill="url(#waterGrad)" clip-path="url(#clip-${z.id})"/>
+      <text x="${z.x}" y="${z.y - 6}" fill="#e6eefc" font-size="13" font-weight="600" text-anchor="middle">${z.name}</text>
+      <text x="${z.x}" y="${z.y + 12}" fill="#9fb3cf" font-size="11" text-anchor="middle">
+        ${trapped ? "被困 " + z.trapped + " 人" : "水位 " + z.water}
+      </text>
+      ${trapped ? `<circle cx="${x + w - 12}" cy="${y + 13}" r="4" fill="#f43f5e"/>` : ""}
+    </g>`;
+  });
+
+  svg.innerHTML = defs + edges + zones;
+  state.edges = data.edges;
+  state.edgesByName = {};
+  data.edges.forEach(e => { state.edgesByName[e.name] = e; });
+}
+
+function highlight(targetId, color) {
+  let el = $("zone-" + targetId);
+  if (el) {
+    const rect = el.querySelector("rect");
+    const ring = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    ring.setAttribute("x", rect.getAttribute("x"));
+    ring.setAttribute("y", rect.getAttribute("y"));
+    ring.setAttribute("width", rect.getAttribute("width"));
+    ring.setAttribute("height", rect.getAttribute("height"));
+    ring.setAttribute("rx", "12");
+    ring.setAttribute("fill", "none");
+    ring.setAttribute("stroke", color);
+    ring.setAttribute("class", "pulse-ring");
+    el.appendChild(ring);
+    setTimeout(() => ring.remove(), 2600);
+    return;
+  }
+  const edge = state.edgesByName[targetId];
+  if (edge) {
+    const line = $("edge-" + edge.id);
+    if (line) {
+      const origin = line.getAttribute("stroke");
+      line.setAttribute("stroke", color);
+      line.setAttribute("stroke-width", "5");
+      setTimeout(() => { line.setAttribute("stroke", origin); line.setAttribute("stroke-width", edge.open ? "4" : "3"); }, 2600);
+    }
+  }
+}
+
+/* ---------------- 渲染 ---------------- */
+function reset() {
+  state.proposals = 0;
+  state.finished = false;
+  $("agents").innerHTML = "";
+  $("conflicts").innerHTML = '<div class="empty">暂无冲突</div>';
+  $("plan").innerHTML = '<div class="empty">等待裁决…</div>';
+  $("effects").innerHTML = '<div class="empty">等待模拟完成…</div>';
+  $("compareCard").style.display = "none";
+  $("decisionCard").style.display = "none";
+  $("trace").textContent = "";
+  $("agentCount").textContent = "0/6";
+  $("planCount").textContent = "0 项";
+  ["kpiTrapped","kpiRescued","kpiCoverage","kpiConflicts","kpiTime"].forEach(id => $(id).textContent = "—");
+}
+
+function renderScenario(d) {
+  $("eventTitle").textContent = d.event.title;
+  $("eventDesc").textContent = d.event.description;
+  $("kpiTrapped").textContent = d.trapped_total;
+  const res = d.resources;
+  $("resources").innerHTML = Object.entries(res)
+    .map(([k, v]) => `<span class="chip">${resName(k)} <b>${v}</b></span>`).join("");
+  drawMap(d);
+}
+
+function resName(k) {
+  return { medical_kits: "医疗包", volunteers: "志愿者", buses: "校车", boats: "冲锋舟", barricades: "路障" }[k] || k;
+}
+
+function renderProposal(p) {
+  const el = document.createElement("div");
+  el.className = "agent";
+  el.style.setProperty("--c", p.color);
+  const res = Object.entries(p.resources || {}).map(([k, v]) => `<span>${resName(k)} ×${v}</span>`).join("");
+  el.innerHTML = `
+    <div class="head">
+      <div class="icon">${p.icon}</div>
+      <div class="name">${p.name}</div>
+      <div class="pri ${p.priority}">${priText(p.priority)}</div>
+    </div>
+    <div class="act">提出 <b>${p.action_text}</b> → ${p.target}</div>
+    <div class="reason">${p.reason || "—"}</div>
+    ${res ? `<div class="res">${res}</div>` : ""}`;
+  $("agents").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("in"));
+  state.proposals += 1;
+  $("agentCount").textContent = state.proposals + "/6";
+  highlight(p.target === p.target_id ? p.target_id : (p.target_id || p.target), p.color);
+}
+
+function priText(p) { return { high: "高优先", medium: "中优先", low: "低优先" }[p] || p; }
+
+function renderResolution(d) {
+  const box = $("conflicts");
+  if (!d.conflicts.length) {
+    box.innerHTML = '<div class="empty">本方案无冲突（各部门诉求一致）</div>';
+  } else {
+    box.innerHTML = d.conflicts.map(c => `
+      <div class="conflict ${c.kind}">
+        <div class="k">${kindText(c.kind)} · ${c.parties.join(" × ")}</div>
+        <div class="d">${c.detail}</div>
+        <div class="r">✓ ${c.resolution}</div>
+      </div>`).join("");
+  }
+  const plan = $("plan");
+  if (!d.items.length) {
+    plan.innerHTML = '<div class="empty">没有行动通过校验</div>';
+  } else {
+    plan.innerHTML = d.items.map(i => `
+      <div class="plan-item">
+        <span class="t">${i.action_text}</span>
+        <span>${i.target}${i.modified ? "（已降级为警戒）" : ""}
+          <div class="m">${i.reason || ""}</div></span>
+      </div>`).join("");
+  }
+  $("planCount").textContent = d.items.length + " 项";
+  const rejected = d.rejected || [];
+  if (rejected.length) {
+    plan.insertAdjacentHTML("beforeend",
+      `<div class="empty" style="margin-top:8px">被驳回 ${rejected.length} 条：${rejected.map(r => agentZh(r.agent) + "「" + r.reason + "」").join("；")}</div>`);
+  }
+}
+
+function kindText(k) {
+  return { resource: "资源冲突", route: "路径冲突", duplicate: "重复提议", invalid: "非法行动" }[k] || k;
+}
+function agentZh(a) {
+  return { command: "指挥", medical: "医疗", security: "保卫", logistics: "后勤", traffic: "交通", student: "学生" }[a] || a;
+}
+
+function renderResult(d) {
+  const m = d.metrics;
+  $("kpiTrapped").textContent = m.trapped_total;
+  $("kpiRescued").textContent = m.rescued;
+  $("kpiCoverage").innerHTML = Math.round(m.coverage * 100) + "<small>%</small>";
+  $("kpiConflicts").textContent = m.conflicts;
+  $("kpiTime").innerHTML = m.response_minutes + "<small> min</small>";
+  $("effects").innerHTML = d.effects.length
+    ? d.effects.map(e => `<div class="effect"><i>✓</i><span>${e.text}${e.zone ? "（" + e.zone + "）" : ""}</span></div>`).join("")
+    : '<div class="empty">没有产生实际效果</div>';
+
+  if (d.comparison) {
+    const a = d.comparison.route_a, b = d.comparison.route_b;
+    $("compareCard").style.display = "";
+    $("compare").innerHTML = `
+      <table>
+        <tr><th>指标</th><th>路线 A · 规则仲裁</th><th>路线 B · 决策 Agent</th></tr>
+        <tr><td>成功转移</td><td class="num">${a.rescued}</td><td class="num">${b.rescued}</td></tr>
+        <tr><td>医疗处置</td><td class="num">${a.stabilized}</td><td class="num">${b.stabilized}</td></tr>
+        <tr><td>物资覆盖</td><td class="num">${a.supported}</td><td class="num">${b.supported}</td></tr>
+        <tr><td>救援覆盖率</td><td class="num">${Math.round(a.coverage * 100)}%</td><td class="num">${Math.round(b.coverage * 100)}%</td></tr>
+        <tr><td>拦截冲突</td><td class="num">${a.conflicts}</td><td class="num">${b.conflicts}</td></tr>
+        <tr><td>通过行动</td><td class="num">${a.actions}</td><td class="num">${b.actions}</td></tr>
+      </table>`;
+  }
+  state.finished = true;
+}
+
+/* ---------------- 事件流 ---------------- */
+function handle(event) {
+  const { type, data } = event;
+  if (type === "scenario") { renderScenario(data); setStatus("六角色并行分析中…", true); }
+  else if (type === "proposal") { renderProposal(data); }
+  else if (type === "decision") {
+    $("decisionCard").style.display = "";
+    $("trace").textContent = data.trace.join("\n");
+  }
+  else if (type === "resolution") { renderResolution(data); }
+  else if (type === "result") {
+    renderResult(data);
+    setStatus(data.decision_agent ? "路线 B 完成，A/B 对比见右侧" : "模拟完成");
+    $("startBtn").disabled = false;
+  }
+  else if (type === "error") {
+    setStatus("模拟失败：" + data.message);
+    $("startBtn").disabled = false;
+  }
+}
+
+function start() {
+  if (state.es) { state.es.close(); state.es = null; }
+  reset();
+  $("startBtn").disabled = true;
+  setStatus("正在生成场景…", true);
+  const params = new URLSearchParams({
+    seed: $("seed").value || "7",
+    severity: $("severity").value,
+    decision_agent: $("decision").checked ? "true" : "false",
+  });
+  const es = new EventSource("/api/simulate/stream?" + params);
+  state.es = es;
+  es.onmessage = (e) => handle(JSON.parse(e.data));
+  es.onerror = () => {
+    es.close();
+    state.es = null;
+    $("startBtn").disabled = false;
+    if (!state.finished) setStatus("事件流已结束或中断");
+  };
+}
+
+$("startBtn").addEventListener("click", start);
+$("rerollBtn").addEventListener("click", () => {
+  $("seed").value = Math.floor(Math.random() * 9000) + 100;
+  start();
+});
+</script>
+</body>
+</html>
