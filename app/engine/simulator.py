@@ -168,12 +168,58 @@ def baseline_outcome(state: SimState) -> dict:
 
 
 def risk_coverage(baseline: dict, metrics: Metrics) -> float:
-    """本方案覆盖了多少"无干预下会恶化的风险暴露"。"""
+    """本方案覆盖了多少“无干预下会恶化的风险暴露”。"""
     at_risk = baseline.get("at_risk", 0)
     if not at_risk:
         return 0.0
     handled = metrics.rescued + metrics.stabilized + metrics.supported * 0.2
     return round(min(1.0, handled / at_risk), 3)
+
+
+def evolve_state(state: SimState, severity: int, round_no: int) -> dict:
+    """两轮之间环境继续恶化：危险度上升、被困人数增加、志愿者补充。
+
+    这是多轮演示的关键——同一批角色在新态势下要重新决策，
+    所以“第 2 轮”不是重复跑一遍，而是对变化后的局面再决策。
+    """
+    delta = round(0.6 * severity, 1)
+    for zone in state.zones.values():
+        if zone["trapped"] > 0:
+            zone["hazard"] = round(min(10.0, zone["hazard"] + delta), 1)
+            zone["trapped"] += max(1, int(zone["trapped"] * 0.05))
+            zone["medical_need"] += max(1, int(zone["medical_need"] * 0.1))
+        zone["risk"] = round(min(10.0, zone["hazard"] * 0.7 + (3.0 if zone["trapped"] else 0.0)), 1)
+    state.resources["volunteers"] = min(60, state.resources.get("volunteers", 0) + 4)
+    return {
+        "round": round_no,
+        "hazard_delta": delta,
+        "note": f"第 {round_no} 轮前：危险度 +{delta}，被困人数 +5%，志愿者 +4",
+    }
+
+
+def merge_metrics(round_metrics: list[Metrics], trapped_total: int) -> Metrics:
+    """把多轮指标合并成一份总账。"""
+    if not round_metrics:
+        return Metrics(trapped_total=trapped_total)
+    rescued = sum(m.rescued for m in round_metrics)
+    stabilized = sum(m.stabilized for m in round_metrics)
+    supported = sum(m.supported for m in round_metrics)
+    return Metrics(
+        trapped_total=trapped_total,
+        rescued=rescued,
+        stabilized=stabilized,
+        supported=supported,
+        coverage=round(min(1.0, (rescued + stabilized * 0.5) / trapped_total), 3) if trapped_total else 0.0,
+        vehicles_used=sum(m.vehicles_used for m in round_metrics),
+        conflicts=sum(m.conflicts for m in round_metrics),
+        conflicts_resolved=sum(m.conflicts_resolved for m in round_metrics),
+        response_minutes=round(sum(m.response_minutes for m in round_metrics), 1),
+        efficiency=round(
+            sum(m.efficiency * max(1, m.trapped_total) for m in round_metrics)
+            / max(1, sum(m.trapped_total for m in round_metrics)),
+            2,
+        ),
+    )
 
 
 def summarize_item(item: PlanItem, state: SimState) -> dict:
@@ -200,4 +246,5 @@ def summarize_item(item: PlanItem, state: SimState) -> dict:
         "reason": item.reason,
         "modified": item.modified,
         "note": item.note,
+        "path": list(item.path),
     }

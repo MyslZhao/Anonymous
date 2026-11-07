@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 
 from app.agents.decision import decide
 from app.agents.llm import propose
 from app.agents.roles import AGENT_META
 from app.config import settings
 from app.data.scenarios import DEFAULT_SCENARIO, ScenarioOptions, build_scenario
-from app.engine.rules import resolve
-from app.engine.simulator import apply_plan, baseline_outcome, risk_coverage, snapshot, summarize_item
-from app.models import ALL_AGENTS, Proposal
+from app.engine.rules import OBJECTIVES, resolve
+from app.engine.simulator import (
+    apply_plan,
+    baseline_outcome,
+    evolve_state,
+    merge_metrics,
+    risk_coverage,
+    snapshot,
+    summarize_item,
+)
+from app.models import ALL_AGENTS, Metrics, Proposal
 from app.storage import save_run
 from app.engine.state import SimState
+
+MAX_ROUNDS = 3
 
 ACTION_TEXT = {
     "send_medical_team": "医疗支援",
@@ -105,118 +116,168 @@ async def stream_simulation(
     decision_agent: bool = False,
     scenario: str = DEFAULT_SCENARIO,
     options: ScenarioOptions | None = None,
+    objective: str = "rescue",
+    rounds: int = 1,
 ):
-    """以事件流形式跑完一次模拟，供 SSE 前端逐步揭示。"""
+    """以事件流形式跑完一次模拟，供 SSE 前端逐步揭示。
+
+    rounds > 1 会推进时间：每轮之间态势恶化（危险度上升、被困增加），
+    六个角色在新态势下重新决策，而不是把同一轮结论重复播放。
+    """
     options = options or ScenarioOptions()
+    objective = objective if objective in OBJECTIVES else "rescue"
+    rounds = max(1, min(MAX_ROUNDS, int(rounds)))
     state = build_scenario(seed, severity, scenario, options)
+    initial_trapped = state.total_trapped()
+    baseline = baseline_outcome(state)
     yield {
         "type": "scenario",
-        "data": {**snapshot(state), "mode": settings.mode_label, "decision_agent": decision_agent},
+        "data": {
+            **snapshot(state),
+            "mode": settings.mode_label,
+            "decision_agent": decision_agent,
+            "objective": objective,
+            "objective_label": OBJECTIVES[objective]["label"],
+            "rounds": rounds,
+        },
     }
 
-    focus_map = assign_focus(state)
-    tasks = [asyncio.create_task(_ask(role, state, focus_map.get(role))) for role in ALL_AGENTS]
-    proposals: list[Proposal] = []
-    for finished in asyncio.as_completed(tasks):
-        proposal, raw = await finished
-        proposals.append(proposal)
-        yield {"type": "proposal", "data": proposal_payload(state, proposal, raw)}
-    proposals.sort(key=lambda p: ALL_AGENTS.index(p.agent))
-
-    baseline = baseline_outcome(state)
-
-    # 路线 A 的“驳回后重申请”：被驳回的角色带着驳回原因再提一次，最多 settings.route_a_retry 轮
-    revisions: list[dict] = []
-    for round_no in range(1, settings.route_a_retry + 1):
-        preview = resolve(state, proposals)
-        if not preview.rejected:
-            break
-        changed = False
-        for rejection in preview.rejected:
-            index = next((i for i, p in enumerate(proposals) if p.agent == rejection.agent), None)
-            if index is None:
-                continue
-            old = proposals[index]
-            feedback = f"你提出的 {old.action} @ {old.target_area}（{old.reason}）被驳回：{rejection.reason}"
-            try:
-                revised, raw = await propose(old.agent, state, focus_map.get(old.agent), feedback)
-            except Exception:
-                continue
-            if (
-                revised.action == old.action
-                and revised.target_area == old.target_area
-                and revised.resource_required.as_dict() == old.resource_required.as_dict()
-            ):
-                continue  # 与上一版完全相同，重申请没有意义（mock 模式必走这条）
-            proposals[index] = revised
-            changed = True
-            entry = {
-                "round": round_no,
-                "agent": old.agent,
-                "reason": rejection.reason,
-                "old": proposal_payload(state, old),
-                "new": proposal_payload(state, revised, raw),
-            }
-            revisions.append(entry)
-            yield {"type": "revision", "data": entry}
-        if not changed:
-            break
-
+    all_effects: list[dict] = []
+    all_revisions: list[dict] = []
+    round_metrics: list[Metrics] = []
+    round_summaries: list[dict] = []
     comparison = None
-    if decision_agent:
-        state_a = build_scenario(seed, severity, scenario, options)
-        res_a = resolve(state_a, proposals)
-        _, metrics_a = apply_plan(state_a, res_a)
 
-        state_b = build_scenario(seed, severity, scenario, options)
-        resolution, trace, attempts, fallback = await decide(state_b, proposals)
-        yield {
-            "type": "decision",
-            "data": {"trace": trace, "attempts": attempts, "fallback": fallback, "objective_mode": True},
-        }
-        effects, metrics = apply_plan(state_b, resolution)
-        state = state_b
-        comparison = {
-            "route_a": _metrics_payload(metrics_a, res_a),
-            "route_b": _metrics_payload(metrics, resolution),
-        }
+    for round_index in range(1, rounds + 1):
+        if round_index > 1:
+            change = evolve_state(state, severity, round_index)
+            yield {
+                "type": "round",
+                "data": {"index": round_index, "total": rounds, "change": change, "state": snapshot(state)},
+            }
+        else:
+            yield {
+                "type": "round",
+                "data": {"index": 1, "total": rounds, "change": None, "state": snapshot(state)},
+            }
+
+        focus_map = assign_focus(state)
+        tasks = [asyncio.create_task(_ask(role, state, focus_map.get(role))) for role in ALL_AGENTS]
+        proposals: list[Proposal] = []
+        for finished in asyncio.as_completed(tasks):
+            proposal, raw = await finished
+            proposals.append(proposal)
+            yield {
+                "type": "proposal",
+                "data": {**proposal_payload(state, proposal, raw), "round": round_index},
+            }
+        proposals.sort(key=lambda p: ALL_AGENTS.index(p.agent))
+
+        # 路线 A 的“驳回后重申请”：带着驳回原因再提一次（mock 下不会变化，自动跳过）
+        for _attempt in range(1, settings.route_a_retry + 1):
+            preview = resolve(state, proposals, objective)
+            if not preview.rejected:
+                break
+            changed = False
+            for rejection in preview.rejected:
+                index = next((i for i, p in enumerate(proposals) if p.agent == rejection.agent), None)
+                if index is None:
+                    continue
+                old = proposals[index]
+                feedback = f"你提出的 {old.action} @ {old.target_area}（{old.reason}）被驳回：{rejection.reason}"
+                try:
+                    revised, raw = await propose(old.agent, state, focus_map.get(old.agent), feedback)
+                except Exception:
+                    continue
+                if (
+                    revised.action == old.action
+                    and revised.target_area == old.target_area
+                    and revised.resource_required.as_dict() == old.resource_required.as_dict()
+                ):
+                    continue
+                proposals[index] = revised
+                changed = True
+                entry = {
+                    "round": round_index,
+                    "agent": old.agent,
+                    "reason": rejection.reason,
+                    "old": proposal_payload(state, old),
+                    "new": proposal_payload(state, revised, raw),
+                }
+                all_revisions.append(entry)
+                yield {"type": "revision", "data": entry}
+            if not changed:
+                break
+
+        if decision_agent:
+            state_a = copy.deepcopy(state)
+            res_a = resolve(state_a, proposals, objective)
+            _, metrics_a = apply_plan(state_a, res_a)
+
+            resolution, trace, attempts, fallback = await decide(state, proposals, objective)
+            yield {
+                "type": "decision",
+                "data": {
+                    "round": round_index,
+                    "trace": trace,
+                    "attempts": attempts,
+                    "fallback": fallback,
+                    "objective": objective,
+                    "objective_mode": True,
+                },
+            }
+            effects, metrics = apply_plan(state, resolution)
+            comparison = {
+                "route_a": _metrics_payload(metrics_a, res_a),
+                "route_b": _metrics_payload(metrics, resolution),
+            }
+        else:
+            resolution = resolve(state, proposals, objective)
+            effects, metrics = apply_plan(state, resolution)
+
+        round_metrics.append(metrics)
+        for effect in effects:
+            all_effects.append({**effect, "round": round_index})
+        round_summaries.append(
+            {
+                "round": round_index,
+                "rescued": metrics.rescued,
+                "stabilized": metrics.stabilized,
+                "supported": metrics.supported,
+                "conflicts": metrics.conflicts,
+                "actions": len(resolution.items),
+            }
+        )
         yield {
             "type": "resolution",
             "data": {
+                "round": round_index,
                 "items": [summarize_item(i, state) for i in resolution.items],
                 "rejected": [r.model_dump() for r in resolution.rejected],
                 "conflicts": [c.model_dump() for c in resolution.conflicts],
                 "ledger": resolution.ledger,
             },
         }
-    else:
-        resolution = resolve(state, proposals)
-        effects, metrics = apply_plan(state, resolution)
-        yield {
-            "type": "resolution",
-            "data": {
-                "items": [summarize_item(i, state) for i in resolution.items],
-                "rejected": [r.model_dump() for r in resolution.rejected],
-                "conflicts": [c.model_dump() for c in resolution.conflicts],
-                "ledger": resolution.ledger,
-            },
-        }
 
+    merged = merge_metrics(round_metrics, initial_trapped)
     result = {
         "type": "result",
         "data": {
-            "effects": effects,
-            "metrics": metrics.model_dump(),
+            "effects": all_effects,
+            "metrics": merged.model_dump(),
+            "rounds": round_summaries,
             "comparison": comparison,
             "baseline": baseline,
-            "risk_covered": risk_coverage(baseline, metrics),
-            "revisions": revisions,
+            "risk_covered": risk_coverage(baseline, merged),
+            "revisions": all_revisions,
             "state": snapshot(state),
             "mode": settings.mode_label,
             "seed": seed,
             "severity": severity,
             "scenario": scenario,
             "decision_agent": decision_agent,
+            "objective": objective,
+            "objective_label": OBJECTIVES[objective]["label"],
             "population_scale": options.population_scale,
             "buses": state.resources.get("buses", 0),
             "boats": state.resources.get("boats", 0),
@@ -232,10 +293,12 @@ async def run_simulation(
     decision_agent: bool = False,
     scenario: str = DEFAULT_SCENARIO,
     options: ScenarioOptions | None = None,
+    objective: str = "rescue",
+    rounds: int = 1,
 ) -> dict:
     """非流式执行，返回完整结果（测试与 API 复用同一套逻辑）。"""
     events: list[dict] = []
-    async for event in stream_simulation(seed, severity, decision_agent, scenario, options):
+    async for event in stream_simulation(seed, severity, decision_agent, scenario, options, objective, rounds):
         events.append(event)
     payload = {
         "scenario": next((e["data"] for e in events if e["type"] == "scenario"), None),

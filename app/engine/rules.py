@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from app.models import Conflict, PlanItem, Proposal, Rejection, Resolution
 from app.engine.state import SimState
 
@@ -15,6 +17,26 @@ SUPPLY_PER_VOLUNTEER = 10
 MEDICAL_PER_KIT = 3
 SHELTERS = ("gym", "gate")
 DEPOT = "teaching"  # 物资集散点
+
+Objective = Literal["rescue", "fairness", "economy"]
+OBJECTIVES: dict[str, dict] = {
+    "rescue": {"label": "救人优先", "desc": "最大化获救与处置人数，不敏感于资源消耗"},
+    "fairness": {"label": "区域公平", "desc": "避免资源集中在单一区域，尽量让每个受困区域都被处置"},
+    "economy": {"label": "资源最省", "desc": "在保住基本救援的前提下，优先低成本行动"},
+}
+
+# 各类资源的“调度代价”权重，用于 economy 目标
+RESOURCE_COST: dict[str, float] = {
+    "medical_kits": 1.0,
+    "volunteers": 0.4,
+    "buses": 3.0,
+    "boats": 3.0,
+    "barricades": 0.4,
+}
+
+
+def request_cost(request: dict[str, int]) -> float:
+    return sum(RESOURCE_COST.get(key, 1.0) * value for key, value in request.items())
 
 
 def benefit_estimate(state: SimState, proposal: Proposal) -> float:
@@ -39,8 +61,20 @@ def benefit_estimate(state: SimState, proposal: Proposal) -> float:
     return 0.0
 
 
-def score(proposal: Proposal, benefit: float) -> float:
-    return PRIORITY_WEIGHT[proposal.priority] * 100 + benefit
+def score(proposal: Proposal, benefit: float, objective: str = "rescue", zone_load: int = 0) -> float:
+    """排序分 = 优先级权重 + 收益 + 目标函数调整。
+
+    目标函数只改变“同等条件下谁先上”，不改变可行性判定：
+    无论选哪个目标，资源超发、道路阻断这些硬约束照样拦截。
+    """
+    base = PRIORITY_WEIGHT[proposal.priority] * 100 + benefit
+    cost = request_cost(proposal.resource_required.as_dict())
+    if objective == "economy":
+        return base - 1.6 * cost
+    if objective == "fairness":
+        # 同一区域被多个角色盯上时降权，鼓励把资源铺开
+        return base - 16.0 * max(0, zone_load - 1)
+    return base - 0.5 * cost  # rescue：资源只是轻微代价
 
 
 def _target_label(state: SimState, proposal: Proposal) -> str:
@@ -85,8 +119,9 @@ def _dedupe(proposals: list[Proposal]) -> tuple[list[Proposal], list[Conflict]]:
     return list(best.values()), conflicts
 
 
-def resolve(state: SimState, proposals: list[Proposal]) -> Resolution:
-    """裁决入口。完全确定性：同样的输入必然得到同样的输出。"""
+def resolve(state: SimState, proposals: list[Proposal], objective: str = "rescue") -> Resolution:
+    """裁决入口。完全确定性：同样的输入（含 objective）必然得到同样的输出。"""
+    objective = objective if objective in OBJECTIVES else "rescue"
     conflicts: list[Conflict] = []
     rejected: list[Rejection] = []
     items: list[PlanItem] = []
@@ -103,9 +138,16 @@ def resolve(state: SimState, proposals: list[Proposal]) -> Resolution:
     candidates, dup_conflicts = _dedupe(candidates)
     conflicts.extend(dup_conflicts)
 
+    zone_load: dict[str, int] = {}
+    for candidate in candidates:
+        zone_load[candidate.target_area] = zone_load.get(candidate.target_area, 0) + 1
+
     ranked = sorted(
         candidates,
-        key=lambda p: (score(p, benefit_estimate(state, p)), p.agent),
+        key=lambda p: (
+            score(p, benefit_estimate(state, p), objective, zone_load.get(p.target_area, 1)),
+            p.agent,
+        ),
         reverse=True,
     )
 
@@ -233,10 +275,32 @@ def resolve(state: SimState, proposals: list[Proposal]) -> Resolution:
                 priority=proposal.priority,
                 resources={k: v for k, v in request.items() if v},
                 reason=proposal.reason,
+                path=_plan_path(state, proposal, closed_extra),
             )
         )
 
     return Resolution(items=items, rejected=rejected, conflicts=conflicts, ledger=ledger)
+
+
+def _plan_path(state: SimState, proposal: Proposal, closed_extra: set[str]) -> list[str]:
+    """给行动算出实际路线（边名序列），供前端在地图上画出来。"""
+    if proposal.action in ("close_road", "open_route"):
+        eid = state.find_edge(proposal.target_area)
+        return [state.edge_name(eid)] if eid else []
+    if proposal.action == "send_medical_team":
+        return _edge_names(state, state.find_path("clinic", proposal.target_area, closed_extra))
+    if proposal.action == "dispatch_supply":
+        return _edge_names(state, state.find_path(DEPOT, proposal.target_area, closed_extra))
+    if proposal.action == "evacuate":
+        for shelter in SHELTERS:
+            edges = state.find_path(proposal.target_area, shelter, closed_extra)
+            if edges:
+                return _edge_names(state, edges)
+    return []
+
+
+def _edge_names(state: SimState, edge_ids: list[str]) -> list[str]:
+    return [state.edge_name(eid) for eid in edge_ids]
 
 
 def _would_isolate(state: SimState, eid: str, closed_extra: set[str]) -> bool:

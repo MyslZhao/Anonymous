@@ -82,6 +82,10 @@
   .plan-item .m{color:var(--muted)}
   .effect{display:flex;gap:9px;font-size:12.5px;padding:6px 0;color:#c7d5e8}
   .effect i{font-style:normal;color:var(--ok)}
+  .route{animation:dash 1.2s linear infinite}
+  @keyframes dash{to{stroke-dashoffset:-24}}
+  .round-tag{font-size:10px;padding:1px 5px;border-radius:5px;border:1px solid var(--border);color:var(--muted);margin-right:6px}
+  .round-banner{font-size:12px;color:var(--accent);padding:2px 0 8px}
   .trace{font-size:12px;line-height:1.7;color:#b9c8dd;background:#0a1322;border:1px solid var(--border);
     border-radius:10px;padding:10px 12px;white-space:pre-wrap}
   table{width:100%;border-collapse:collapse;font-size:12.5px}
@@ -138,6 +142,16 @@
   </label>
   <label class="field">冲锋舟数
     <input type="number" id="boats" min="0" max="10" placeholder="默认" />
+  </label>
+  <label class="field">目标函数
+    <select id="objective"></select>
+  </label>
+  <label class="field">推演轮次
+    <select id="rounds">
+      <option value="1" selected>1 轮</option>
+      <option value="2">2 轮</option>
+      <option value="3">3 轮</option>
+    </select>
   </label>
   <label class="toggle" title="路线 B：独立决策 Agent 以整体利益最大化重新编排方案">
     <input type="checkbox" id="decision" /> 决策 Agent（路线 B）
@@ -244,6 +258,14 @@ fetch("/api/scenarios").then(r => r.json()).then(d => {
   select.value = d.default;
 }).catch(() => { $("scenario").innerHTML = '<option value="rainstorm">暴雨内涝</option>'; });
 
+fetch("/api/objectives").then(r => r.json()).then(d => {
+  const select = $("objective");
+  select.innerHTML = d.objectives
+    .map(o => `<option value="${o.id}" title="${o.desc}">${o.label}</option>`)
+    .join("");
+  select.value = d.default;
+}).catch(() => { $("objective").innerHTML = '<option value="rescue">救人优先</option>'; });
+
 function setStatus(text, busy) {
   $("status").innerHTML = (busy ? '<span class="pulse"></span>' : "") + text;
 }
@@ -334,6 +356,7 @@ function reset() {
   state.finished = false;
   state.agentEls = {};
   $("agents").innerHTML = "";
+  $("map").querySelectorAll(".route").forEach(el => el.remove());
   $("conflicts").innerHTML = '<div class="empty">暂无冲突</div>';
   $("plan").innerHTML = '<div class="empty">等待裁决…</div>';
   $("effects").innerHTML = '<div class="empty">等待模拟完成…</div>';
@@ -401,6 +424,63 @@ function renderRevision(d) {
   highlight(d.new.target_id || d.new.target, "#fbbf24");
 }
 
+function renderRound(d) {
+  const label = d.total > 1 ? `第 ${d.index}/${d.total} 轮` : "本轮";
+  if (d.index > 1) {
+    $("agents").innerHTML = "";
+    state.agentEls = {};
+    state.proposals = 0;
+    $("agentCount").textContent = "0/6";
+    $("conflicts").innerHTML = '<div class="empty">等待本轮裁决…</div>';
+    $("plan").innerHTML = '<div class="empty">等待本轮裁决…</div>';
+    $("planCount").textContent = "0 项";
+    drawMap(d.state);
+    drawRoutes([]);
+  }
+  const note = d.change ? ` · ${d.change.note}` : "";
+  setStatus(`${label}：六角色并行分析中…${note}`, true);
+}
+
+/* ---------------- 路线可视化 ---------------- */
+function drawRoutes(items) {
+  const svg = $("map");
+  svg.querySelectorAll(".route").forEach(el => el.remove());
+  items.forEach((item, index) => {
+    if (!item.path || !item.path.length) return;
+    const nodes = [];
+    let cursor = null;
+    item.path.forEach(name => {
+      const edge = state.edgesByName[name];
+      if (!edge) return;
+      let from = edge.a, to = edge.b;
+      if (cursor !== null) {
+        if (edge.b === cursor) { from = edge.b; to = edge.a; }
+        else if (edge.a !== cursor) return; // 路径断链，跳过
+      }
+      if (nodes.length === 0) nodes.push(from);
+      nodes.push(to);
+      cursor = to;
+    });
+    const points = nodes
+      .map(id => state.zones[id])
+      .filter(Boolean)
+      .map(z => `${z.x},${z.y}`)
+      .join(" ");
+    if (!points) return;
+    const color = index % 2 === 0 ? "#38bdf8" : "#34d399";
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    line.setAttribute("points", points);
+    line.setAttribute("fill", "none");
+    line.setAttribute("stroke", color);
+    line.setAttribute("stroke-width", "3.5");
+    line.setAttribute("stroke-dasharray", "8 6");
+    line.setAttribute("stroke-linecap", "round");
+    line.setAttribute("opacity", ".95");
+    line.setAttribute("class", "route");
+    svg.appendChild(line);
+  });
+}
+
 function priText(p) { return { high: "高优先", medium: "中优先", low: "低优先" }[p] || p; }
 
 function renderResolution(d) {
@@ -427,6 +507,7 @@ function renderResolution(d) {
       </div>`).join("");
   }
   $("planCount").textContent = d.items.length + " 项";
+  drawRoutes(d.items || []);
   const rejected = d.rejected || [];
   if (rejected.length) {
     plan.insertAdjacentHTML("beforeend",
@@ -449,8 +530,22 @@ function renderResult(d) {
   $("kpiConflicts").textContent = m.conflicts;
   $("kpiTime").innerHTML = m.response_minutes + "<small> min</small>";
   $("effects").innerHTML = d.effects.length
-    ? d.effects.map(e => `<div class="effect"><i>✓</i><span>${e.text}${e.zone ? "（" + e.zone + "）" : ""}</span></div>`).join("")
+    ? d.effects
+        .map(
+          e =>
+            `<div class="effect">${e.round ? `<span class="round-tag">R${e.round}</span>` : ""}<i>✓</i><span>${e.text}${e.zone ? "（" + e.zone + "）" : ""}</span></div>`
+        )
+        .join("")
     : '<div class="empty">没有产生实际效果</div>';
+
+  if (d.rounds && d.rounds.length > 1) {
+    $("effects").insertAdjacentHTML(
+      "afterbegin",
+      `<div class="round-banner">${d.rounds
+        .map(r => `R${r.round}：转移 ${r.rescued} · 医疗 ${r.stabilized} · 冲突 ${r.conflicts}`)
+        .join("　|　")}</div>`
+    );
+  }
 
   if (d.baseline) {
     const b = d.baseline;
@@ -484,6 +579,7 @@ function renderResult(d) {
 function handle(event) {
   const { type, data } = event;
   if (type === "scenario") { renderScenario(data); setStatus("六角色并行分析中…", true); }
+  else if (type === "round") { renderRound(data); }
   else if (type === "proposal") { renderProposal(data); }
   else if (type === "revision") {
     renderRevision(data);
@@ -515,6 +611,8 @@ function start() {
     seed: $("seed").value || "7",
     severity: $("severity").value,
     scale: $("scale").value || "1",
+    objective: $("objective").value || "rescue",
+    rounds: $("rounds").value || "1",
     decision_agent: $("decision").checked ? "true" : "false",
   });
   const buses = $("buses").value.trim();

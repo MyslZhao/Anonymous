@@ -65,6 +65,39 @@ class SimState:
                     queue.append(nxt)
         return False
 
+    def find_path(self, src: str, dst: str, extra_closed: set[str] | None = None) -> list[str]:
+        """返回从 src 到 dst 的边 id 序列（BFS 最短路）；不可达返回空列表。"""
+        if src == dst:
+            return []
+        closed = extra_closed or set()
+        adj: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for eid, edge in self.edges.items():
+            if not edge["open"] or eid in closed:
+                continue
+            adj[edge["a"]].append((edge["b"], eid))
+            adj[edge["b"]].append((edge["a"], eid))
+
+        prev: dict[str, tuple[str, str]] = {}
+        seen = {src}
+        queue = [src]
+        while queue:
+            node = queue.pop(0)
+            for nxt, eid in adj[node]:
+                if nxt in seen:
+                    continue
+                prev[nxt] = (node, eid)
+                if nxt == dst:
+                    path: list[str] = []
+                    cursor = nxt
+                    while cursor != src:
+                        parent, edge_id = prev[cursor]
+                        path.append(edge_id)
+                        cursor = parent
+                    return list(reversed(path))
+                seen.add(nxt)
+                queue.append(nxt)
+        return []
+
     def isolating_edges(self, extra_closed: set[str] | None = None) -> list[str]:
         """返回“一旦封锁，就会让仍有被困人员的区域失去唯一通道”的边。"""
         risky: list[str] = []

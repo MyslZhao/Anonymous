@@ -1,4 +1,4 @@
-"""路线 B：独立的「决策 Agent」，以整体利益最大化为目标重新编排调度方案。
+﻿"""路线 B：独立的「决策 Agent」，以整体利益最大化为目标重新编排调度方案。
 
 默认关闭（见 README §4.3），用于与路线 A（纯规则仲裁）做同场景对比。
 注意：决策 Agent 的产出同样必须再过一遍规则引擎，它没有绕过校验的特权。
@@ -11,12 +11,12 @@ import json
 from app.agents.llm import AgentError, _chat, extract_json
 from app.agents.prompts import build_user_message
 from app.config import settings
-from app.engine.rules import resolve
+from app.engine.rules import OBJECTIVES, resolve
 from app.engine.state import SimState
 from app.models import Proposal, ResourceRequest, Resolution
 
 DECISION_SYSTEM = """你是校园应急决策 Agent。你的目标不是复述各部门意见，而是在资源有限的约束下，
-最大化整体救援利益：优先覆盖受困区域数量，其次最大化获救人数，再最小化资源消耗与二次风险。
+按【本轮目标函数】在救人收益、区域公平、资源消耗之间做取舍，并给出整体方案。
 
 输入包含：校园状态快照 + 六个专业 Agent 的原始建议。
 你必须输出 JSON：
@@ -174,9 +174,16 @@ def normalize_plan(data: dict) -> list[Proposal]:
     return proposals
 
 
-async def _llm_plan(state: SimState, proposals: list[Proposal], feedback: str = "") -> tuple[list[Proposal], str]:
-    user = build_user_message(state) + "\n\n【各角色原始建议】\n" + json.dumps(
-        [json.loads(p.model_dump_json()) for p in proposals], ensure_ascii=False, indent=2
+async def _llm_plan(
+    state: SimState, proposals: list[Proposal], feedback: str = "", objective: str = "rescue"
+) -> tuple[list[Proposal], str]:
+    spec = OBJECTIVES.get(objective, OBJECTIVES["rescue"])
+    user = (
+        f"【本轮目标函数】{spec['label']}：{spec['desc']}\n"
+        "请严格按这个目标函数做取舍，而不是简单复述各部门意见。\n\n"
+        + build_user_message(state)
+        + "\n\n【各角色原始建议】\n"
+        + json.dumps([json.loads(p.model_dump_json()) for p in proposals], ensure_ascii=False, indent=2)
     )
     if feedback:
         user += f"\n\n【上一轮方案被规则引擎驳回的原因】\n{feedback}\n请修正这些问题，重新输出完整方案。"
@@ -199,20 +206,21 @@ async def _llm_plan(state: SimState, proposals: list[Proposal], feedback: str = 
 
 
 async def decide(
-    state: SimState, proposals: list[Proposal]
+    state: SimState, proposals: list[Proposal], objective: str = "rescue"
 ) -> tuple[Resolution, list[str], int, bool]:
     """返回 (裁决结果, 决策轨迹, 尝试次数, 是否回退到路线 A)。"""
     trace: list[str] = []
     attempts = 0
     feedback = ""
+    objective = objective if objective in OBJECTIVES else "rescue"
 
     for attempt in range(settings.max_retry_rounds + 1):
         attempts = attempt + 1
         try:
             if settings.mock_mode:
-                plan, objective = _mock_plan(state, proposals)
+                plan, rationale = _mock_plan(state, proposals)
             else:
-                plan, objective = await _llm_plan(state, proposals, feedback)
+                plan, rationale = await _llm_plan(state, proposals, feedback, objective)
         except Exception as exc:  # 决策 Agent 失败不影响主流程
             trace.append(f"第 {attempts} 轮决策失败：{exc}")
             feedback = (
@@ -221,8 +229,8 @@ async def decide(
             )
             continue
 
-        trace.append(f"第 {attempts} 轮目标：{objective or '最大化整体救援收益'}")
-        resolution = resolve(state, plan)
+        trace.append(f"第 {attempts} 轮目标（{OBJECTIVES[objective]['label']}）：{rationale or '最大化整体救援收益'}")
+        resolution = resolve(state, plan, objective)
 
         if not resolution.rejected:
             trace.append(f"方案通过规则校验：{len(resolution.items)} 项行动，资源余量 {resolution.ledger}")
@@ -232,4 +240,4 @@ async def decide(
         trace.append(f"第 {attempts} 轮方案被规则引擎驳回（{feedback}），带反馈重试")
 
     trace.append("决策 Agent 未能产出可执行方案，回退到路线 A（规则仲裁）")
-    return resolve(state, proposals), trace, attempts, True
+    return resolve(state, proposals, objective), trace, attempts, True

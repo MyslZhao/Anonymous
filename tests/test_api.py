@@ -69,6 +69,29 @@ def test_scale_out_of_range_returns_422():
     assert response.status_code == 422
 
 
+def test_objectives_endpoint_lists_three():
+    with TestClient(app) as client:
+        data = client.get("/api/objectives").json()
+    assert {o["id"] for o in data["objectives"]} == {"rescue", "fairness", "economy"}
+    assert data["default"] == "rescue"
+
+
+def test_simulate_honors_objective_and_rounds():
+    with TestClient(app) as client:
+        data = client.post(
+            "/api/simulate", params={"objective": "fairness", "rounds": 2, "seed": 7}
+        ).json()
+    assert data["result"]["objective"] == "fairness"
+    assert len(data["result"]["rounds"]) == 2
+    assert len(data["proposals"]) == 12
+
+
+def test_unknown_objective_returns_400():
+    with TestClient(app) as client:
+        response = client.post("/api/simulate", params={"objective": "whatever"})
+    assert response.status_code == 400
+
+
 def test_simulate_endpoint_returns_full_result():
     with TestClient(app) as client:
         data = client.post("/api/simulate", params={"seed": 7, "severity": 3}).json()

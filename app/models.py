@@ -75,6 +75,7 @@ class PlanItem(BaseModel):
     reason: str = ""
     modified: bool = False
     note: str = ""
+    path: list[str] = Field(default_factory=list)  # 途经道路名称序列，用于地图可视化
 
 
 class Conflict(BaseModel):

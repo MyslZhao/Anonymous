@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.agents.coordinator import run_simulation, stream_simulation
 from app.config import settings
 from app.data.scenarios import DEFAULT_SCENARIO, SCENARIOS, ScenarioOptions, build_scenario, list_scenarios
+from app.engine.rules import OBJECTIVES
 from app.engine.simulator import snapshot
 from app.storage import init_db, list_runs
 
@@ -30,6 +31,12 @@ app = FastAPI(title="CampusMind", version="0.2.0", lifespan=lifespan)
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _check_objective(objective: str) -> str:
+    if objective not in OBJECTIVES:
+        raise HTTPException(status_code=400, detail=f"未知目标函数：{objective}")
+    return objective
 
 
 def _options(scale: float, buses: int | None, boats: int | None) -> ScenarioOptions:
@@ -55,6 +62,17 @@ async def health() -> dict:
     return {"status": "ok", "mode": settings.mode_label, "mock": settings.mock_mode}
 
 
+@app.get("/api/objectives")
+async def objectives() -> dict:
+    return {
+        "objectives": [
+            {"id": key, "label": value["label"], "desc": value["desc"]}
+            for key, value in OBJECTIVES.items()
+        ],
+        "default": "rescue",
+    }
+
+
 @app.get("/api/scenarios")
 async def scenarios() -> dict:
     return {"scenarios": list_scenarios(), "default": DEFAULT_SCENARIO}
@@ -68,6 +86,8 @@ async def scenario(
     scale: float = Query(1.0, ge=0.1, le=5.0),
     buses: int | None = Query(None, ge=0, le=20),
     boats: int | None = Query(None, ge=0, le=10),
+    objective: str = Query("rescue"),
+    rounds: int = Query(1, ge=1, le=3),
 ) -> dict:
     state = build_scenario(seed, severity, _check_scenario(scenario), _options(scale, buses, boats))
     return {**snapshot(state), "mode": settings.mode_label}
@@ -82,6 +102,8 @@ async def simulate(
     scale: float = Query(1.0, ge=0.1, le=5.0),
     buses: int | None = Query(None, ge=0, le=20),
     boats: int | None = Query(None, ge=0, le=10),
+    objective: str = Query("rescue"),
+    rounds: int = Query(1, ge=1, le=3),
 ) -> dict:
     return await run_simulation(
         seed=seed,
@@ -89,6 +111,8 @@ async def simulate(
         decision_agent=decision_agent,
         scenario=_check_scenario(scenario),
         options=_options(scale, buses, boats),
+        objective=_check_objective(objective),
+        rounds=rounds,
     )
 
 
@@ -105,13 +129,21 @@ async def simulate_stream(
     scale: float = Query(1.0, ge=0.1, le=5.0),
     buses: int | None = Query(None, ge=0, le=20),
     boats: int | None = Query(None, ge=0, le=10),
+    objective: str = Query("rescue"),
+    rounds: int = Query(1, ge=1, le=3),
 ) -> StreamingResponse:
     _check_scenario(scenario)
 
     async def generator():
         try:
             async for event in stream_simulation(
-                seed, severity, decision_agent, scenario, _options(scale, buses, boats)
+                seed,
+                severity,
+                decision_agent,
+                scenario,
+                _options(scale, buses, boats),
+                _check_objective(objective),
+                rounds,
             ):
                 yield _sse(event)
                 await asyncio.sleep(0.05)  # 让前端能真正“逐条浮现”，而不是瞬间刷完
