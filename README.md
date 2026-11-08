@@ -3,7 +3,7 @@
 > 多个专业 AI 角色并行出方案，确定性规则引擎负责校验与裁决。
 > **AI 只提议，程序负责判定与执行。**
 
-![python](https://img.shields.io/badge/python-3.12-3776AB) ![tests](https://img.shields.io/badge/tests-134%20passed-brightgreen) ![mode](https://img.shields.io/badge/mock-可离线运行-blue)
+![python](https://img.shields.io/badge/python-3.12-3776AB) ![tests](https://img.shields.io/badge/tests-134%20passed-brightgreen) ![mode](https://img.shields.io/badge/mock-可离线演示-blue)
 
 ---
 
