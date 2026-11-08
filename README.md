@@ -26,6 +26,8 @@ CampusMind 的做法是把"提议"和"裁决"拆开：
 
 ### 本地构建
 
+> 服务器部署详见 §9.
+
 ```powershell
 uv sync                                   # uv 自动准备 Python 3.12 与依赖
 Copy-Item .env.example .env               # 不填 Key → 离线 mock 模式，零网络可跑
@@ -294,7 +296,7 @@ curl "http://127.0.0.1:8000/api/scenario?map_id=map-23a72157&severity=3"
 | live 路线 B（5 seeds） | 10.46s | 12.16s | 100%（回退率 20%） |
 | 8 路并发（live 路线 A） | 23.65s | 25.38s | 100% |
 
-8 路并发的时延不是 8×6.5s——因为全局 AI 并发上限是 4，请求会排队；成功率高说明是在等待而不是失败。演示场景（1–3 位评委）用不到这个并发量。
+8 路并发的时延不是 8×6.5s——因为全局 AI 并发上限是 4，请求会排队；成功率高说明是在等待而不是失败。
 
 ### 7.2 故障与降级路径
 
@@ -307,6 +309,9 @@ curl "http://127.0.0.1:8000/api/scenario?map_id=map-23a72157&severity=3"
 | DeepSeek 超时 / 网络错误 | 单角色降级，不影响整轮；异常写入该角色的理由 |
 
 ### 7.3 单 worker 的依据
+
+> 该依据以 §2`在线演示`配置的 2核2g+2g swap ECS 云服务器为参考，  
+> 实际部署细节可根据服务器配置动态调整
 
 2 核 2GB 上**不用 gunicorn 多 worker**，原因是正确性而不是性能：
 
@@ -341,7 +346,7 @@ uv run python -m scripts.benchmark --seeds 0 --http-concurrency 8
 
 ## 8. 测试
 
-```
+```pytest
 134 passed in 3.3s
 ```
 
