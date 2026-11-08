@@ -181,7 +181,7 @@ def resolve(state: SimState, proposals: list[Proposal], objective: str = "rescue
 
         # ---- 2. 行动可行性 ----
         if proposal.action in ("send_medical_team", "dispatch_supply"):
-            origin = "clinic" if proposal.action == "send_medical_team" else DEPOT
+            origin = state.medical_zone() if proposal.action == "send_medical_team" else state.depot_zone()
             if proposal.target_area not in state.zones:
                 rejected.append(
                     Rejection(agent=proposal.agent, action=proposal.action, target_area=proposal.target_area, reason="目标区域不存在")
@@ -251,7 +251,7 @@ def resolve(state: SimState, proposals: list[Proposal], objective: str = "rescue
                     Rejection(agent=proposal.agent, action=proposal.action, target_area=proposal.target_area, reason="目标区域不存在")
                 )
                 continue
-            reachable = any(state.path_exists(proposal.target_area, s, closed_extra) for s in SHELTERS)
+            reachable = any(state.path_exists(proposal.target_area, s, closed_extra) for s in state.shelter_zones())
             if not reachable:
                 rejected.append(
                     Rejection(
@@ -288,11 +288,13 @@ def _plan_path(state: SimState, proposal: Proposal, closed_extra: set[str]) -> l
         eid = state.find_edge(proposal.target_area)
         return [state.edge_name(eid)] if eid else []
     if proposal.action == "send_medical_team":
-        return _edge_names(state, state.find_path("clinic", proposal.target_area, closed_extra))
+        medical = state.medical_zone()
+        return _edge_names(state, state.find_path(medical, proposal.target_area, closed_extra)) if medical else []
     if proposal.action == "dispatch_supply":
-        return _edge_names(state, state.find_path(DEPOT, proposal.target_area, closed_extra))
+        depot = state.depot_zone()
+        return _edge_names(state, state.find_path(depot, proposal.target_area, closed_extra)) if depot else []
     if proposal.action == "evacuate":
-        for shelter in SHELTERS:
+        for shelter in state.shelter_zones():
             edges = state.find_path(proposal.target_area, shelter, closed_extra)
             if edges:
                 return _edge_names(state, edges)
@@ -305,11 +307,12 @@ def _edge_names(state: SimState, edge_ids: list[str]) -> list[str]:
 
 def _would_isolate(state: SimState, eid: str, closed_extra: set[str]) -> bool:
     blocked = set(closed_extra) | {eid}
+    care = state.care_zones()
+    if not care:
+        return False
     for zid in state.trapped_zones():
-        before = any(state.path_exists(zid, s) for s in SHELTERS) or state.path_exists(zid, "clinic")
-        after = any(state.path_exists(zid, s, blocked) for s in SHELTERS) or state.path_exists(
-            zid, "clinic", blocked
-        )
+        before = any(state.path_exists(zid, zone) for zone in care)
+        after = any(state.path_exists(zid, zone, blocked) for zone in care)
         if before and not after:
             return True
     return False

@@ -1,8 +1,9 @@
-"""模型输出的契约层测试：解析容错、角色纠偏、区域/道路填反的拦截。"""
+﻿"""模型输出的契约层测试：解析容错、角色纠偏、区域/道路填反的拦截。"""
 
 import pytest
 
 from app.agents.llm import AgentError, extract_json, parse_proposal, shape_issue
+from app.agents.prompts import action_schema_for
 from app.data.scenarios import build_scenario
 from app.models import Proposal
 
@@ -71,3 +72,13 @@ def test_mock_proposals_stay_inside_role_boundaries(role):
 
     state = build_scenario(seed=7, severity=3, scenario="fire")
     assert role_issue(role, mock_proposal(role, state).action) is None
+
+def test_schema_lists_custom_map_ids():
+    from app.data.maps import MapSpec
+    from tests.test_maps import MAP
+
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm", map_spec=MapSpec.model_validate(MAP))
+    schema = action_schema_for(state)
+    assert "d1(一号宿舍)" in schema
+    assert "主路" in schema
+    assert "dorm_a" not in schema, "自定义地图不应再提示内置地图的区域 id"

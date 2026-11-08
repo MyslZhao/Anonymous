@@ -1,4 +1,4 @@
-"""Agent 提示词：六个角色共用同一个模型，靠不同系统提示词区分。"""
+﻿"""Agent 提示词：六个角色共用同一个模型，靠不同系统提示词区分。"""
 
 from __future__ import annotations
 
@@ -14,11 +14,19 @@ ACTION_SCHEMA = """你必须只输出一个 JSON 对象，不要输出任何解�
     "medical_kits": 0, "volunteers": 0, "buses": 0, "boats": 0, "barricades": 0
   },
   "reason": "<一句话说明判断依据，40 字以内>"
-}
-区域 id 只能取：gate(校门及道路), teaching(教学楼), dorm_a(学生宿舍A), dorm_b(学生宿舍B),
-canteen(食堂), library(图书馆), clinic(医务室), gym(体育馆)。
-道路类行动(close_road / open_route)的 target_area 必须填【道路名称】，可用：主干道、2号道路、东环路、
-教学路、食堂路、医务路、北区路、宿舍环线、图书馆路、南环路、医务支路。填区域 id 会被直接驳回。"""
+}"""
+
+
+def action_schema_for(state: SimState) -> str:
+    """把当前地图的真实区域 id / 道路名注入 schema，自定义地图也能用。"""
+    zone_list = "、".join(f"{zid}({zone['name']})" for zid, zone in state.zones.items())
+    road_list = "、".join(edge["name"] for edge in state.edges.values())
+    return (
+        f"{ACTION_SCHEMA}\n"
+        f"区域 id 只能取：{zone_list}。\n"
+        "道路类行动(close_road / open_route)的 target_area 必须填【道路名称】，"
+        f"可用：{road_list}。填区域 id 会被直接驳回。"
+    )
 
 COMMON_RULES = """严格要求：
 1. 只提出你职责范围内、且当前资源条件下可能执行的行动，不要虚构不存在的设施。
@@ -83,7 +91,7 @@ def build_user_message(state: SimState, focus: str | None = None) -> str:
         "",
         "【可用资源】" + "，".join(f"{k}={v}" for k, v in state.resources.items()),
         "",
-        ACTION_SCHEMA,
+        action_schema_for(state),
         COMMON_RULES,
     ]
     return "\n".join(lines)

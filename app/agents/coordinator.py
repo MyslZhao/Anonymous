@@ -9,6 +9,7 @@ from app.agents.decision import decide
 from app.agents.llm import propose
 from app.agents.roles import AGENT_META
 from app.config import settings
+from app.data.maps import MapSpec
 from app.data.scenarios import DEFAULT_SCENARIO, ScenarioOptions, build_scenario
 from app.engine.rules import OBJECTIVES, resolve
 from app.engine.simulator import (
@@ -118,6 +119,8 @@ async def stream_simulation(
     options: ScenarioOptions | None = None,
     objective: str = "rescue",
     rounds: int = 1,
+    map_spec: MapSpec | None = None,
+    map_id: str | None = None,
 ):
     """以事件流形式跑完一次模拟，供 SSE 前端逐步揭示。
 
@@ -127,7 +130,7 @@ async def stream_simulation(
     options = options or ScenarioOptions()
     objective = objective if objective in OBJECTIVES else "rescue"
     rounds = max(1, min(MAX_ROUNDS, int(rounds)))
-    state = build_scenario(seed, severity, scenario, options)
+    state = build_scenario(seed, severity, scenario, options, map_spec)
     initial_trapped = state.total_trapped()
     baseline = baseline_outcome(state)
     yield {
@@ -139,6 +142,7 @@ async def stream_simulation(
             "objective": objective,
             "objective_label": OBJECTIVES[objective]["label"],
             "rounds": rounds,
+            "map_id": map_id,
         },
     }
 
@@ -278,6 +282,7 @@ async def stream_simulation(
             "decision_agent": decision_agent,
             "objective": objective,
             "objective_label": OBJECTIVES[objective]["label"],
+            "map_id": map_id,
             "population_scale": options.population_scale,
             "buses": state.resources.get("buses", 0),
             "boats": state.resources.get("boats", 0),
@@ -295,10 +300,14 @@ async def run_simulation(
     options: ScenarioOptions | None = None,
     objective: str = "rescue",
     rounds: int = 1,
+    map_spec: MapSpec | None = None,
+    map_id: str | None = None,
 ) -> dict:
     """非流式执行，返回完整结果（测试与 API 复用同一套逻辑）。"""
     events: list[dict] = []
-    async for event in stream_simulation(seed, severity, decision_agent, scenario, options, objective, rounds):
+    async for event in stream_simulation(
+        seed, severity, decision_agent, scenario, options, objective, rounds, map_spec, map_id
+    ):
         events.append(event)
     payload = {
         "scenario": next((e["data"] for e in events if e["type"] == "scenario"), None),

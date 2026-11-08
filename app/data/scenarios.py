@@ -1,4 +1,4 @@
-"""应急场景注册表。
+﻿"""应急场景注册表。
 
 同一个校园拓扑（8 区域 / 11 条道路）上挂不同突发事件：
 暴雨内涝、宿舍火灾、大面积停电、食堂食物中毒。
@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from app.data.campus import EDGES, RESOURCES, ZONES
+from app.data.maps import MapSpec, derive_roles, map_to_state_parts
 from app.engine.state import SimState
 
 SEVERITY_TITLE = {1: "蓝色", 2: "黄色", 3: "橙色"}
@@ -104,6 +105,7 @@ def _finish(
     return SimState(
         seed=seed,
         severity=severity,
+        roles=derive_roles(zones),
         event={
             "id": scenario,
             "title": title,
@@ -290,6 +292,130 @@ SCENARIOS: dict[str, dict] = {
 
 DEFAULT_SCENARIO = "rainstorm"
 
+# 在自定义地图上生成事件时使用的场景画像（与具体区域 id 无关）
+SCENARIO_PROFILES: dict[str, dict] = {
+    "rainstorm": {
+        "event_name": "校园暴雨内涝",
+        "suffix": "预警",
+        "description": "强降雨导致校园多处积水，部分道路中断，宿舍区有学生被困，需多部门协同处置。",
+        "hazard_label": "积水",
+        "trapped_label": "被困",
+        "trapped_base": 90,
+        "medical_ratio": 0.3,
+        "hazard_span": (5.5, 9.5),
+        "resources": dict(RESOURCES),
+    },
+    "fire": {
+        "event_name": "校园火灾",
+        "suffix": "响应",
+        "description": "建筑起火并向上蔓延，浓烟涌入楼道，部分人员被困房间，多地道路被占用。",
+        "hazard_label": "火势",
+        "trapped_label": "被困",
+        "trapped_base": 100,
+        "medical_ratio": 0.5,
+        "hazard_span": (7.0, 9.8),
+        "resources": {"medical_kits": 10, "volunteers": 30, "buses": 2, "boats": 0, "barricades": 6},
+    },
+    "blackout": {
+        "event_name": "校园大面积停电",
+        "suffix": "响应",
+        "description": "供电主干线故障，多处失电，电梯困人、楼道照明失效，需组织滞留人员疏散。",
+        "hazard_label": "影响",
+        "trapped_label": "滞留",
+        "trapped_base": 55,
+        "medical_ratio": 0.2,
+        "hazard_span": (4.0, 8.0),
+        "resources": {"medical_kits": 8, "volunteers": 40, "buses": 2, "boats": 0, "barricades": 4},
+    },
+    "food_safety": {
+        "event_name": "疑似食物中毒",
+        "suffix": "响应",
+        "description": "多人出现腹痛呕吐，病例向住宿区扩散，医疗物资紧张，需转运与流调同步进行。",
+        "hazard_label": "病例密度",
+        "trapped_label": "待救治",
+        "trapped_base": 80,
+        "medical_ratio": 0.8,
+        "hazard_span": (5.0, 9.0),
+        "resources": {"medical_kits": 6, "volunteers": 30, "buses": 2, "boats": 0, "barricades": 4},
+    },
+}
+
+KIND_PRIORITY = {"residential": 0, "dense": 1, "flow": 2, "corridor": 3, "medical": 4, "shelter": 5}
+
+
+def _close_routes_for_demo(zones: dict[str, dict], edges: dict[str, dict], trapped_ids: list[str]) -> None:
+    """在自定义地图上人为制造“唯一通道”：保留每个受困区的至少一条救援通道，其余尽量封闭。
+
+    只在不会彻底切断救援、也不会连带切断其他受困区的前提下封闭，
+    因此自定义地图同样能演示“封路会切断唯一通道”的冲突。
+    """
+    probe = SimState(seed=0, severity=1, zones=zones, edges=edges, roles=derive_roles(zones))
+    care = probe.care_zones()
+    if not care:
+        return
+    for zid in trapped_ids:
+        incident = sorted(
+            (e for e in edges.values() if zid in (e["a"], e["b"]) and e["open"]), key=lambda e: e["id"]
+        )
+        for edge in incident:
+            closed = {eid for eid, item in edges.items() if not item["open"]} | {edge["id"]}
+            if not all(probe.path_exists(zid, target, closed) for target in care):
+                continue  # 封闭会让受困区到不了某个救治点，跳过
+            broken = any(
+                not all(probe.path_exists(other, target, closed) for target in care)
+                for other in trapped_ids
+                if other != zid
+            )
+            if broken:
+                continue
+            allowed = sum(1 for e in edges.values() if zid in (e["a"], e["b"]) and e["open"])
+            if allowed <= 1:
+                break
+            edges[edge["id"]]["open"] = False
+            edges[edge["id"]]["reason"] = f"{edge['name']} 因突发事件封闭"
+
+
+def _build_on_map(
+    map_spec: MapSpec,
+    scenario: str,
+    seed: int,
+    severity: int,
+    options: ScenarioOptions,
+) -> SimState:
+    """在外部传入的地图上生成一次事件（按 kind 语义选取受困区与危险度）。"""
+    profile = SCENARIO_PROFILES[scenario]
+    rng = random.Random(seed * 991 + severity)
+    zones, edges, resources = map_to_state_parts(map_spec)
+
+    candidates = sorted(zones.values(), key=lambda z: KIND_PRIORITY.get(z["kind"], 9))
+    trapped_targets = candidates[: min(3, len(candidates))]
+    for index, zone in enumerate(trapped_targets):
+        base = profile["trapped_base"] * (1 - 0.25 * index)
+        zone["trapped"] = max(1, int(base * (0.6 + 0.4 * severity / 3)))
+        zone["hazard"] = round(min(10.0, rng.uniform(*profile["hazard_span"]) * severity / 3), 1)
+        zone["_medical_ratio"] = profile["medical_ratio"]
+    for zone in zones.values():
+        if zone not in trapped_targets:
+            zone["hazard"] = round(rng.uniform(0.2, 2.5) * severity / 3, 1)
+
+    if severity >= 2:
+        _close_routes_for_demo(zones, edges, [z["id"] for z in trapped_targets])
+
+    title = f"{profile['event_name']}（{SEVERITY_TITLE[severity]}{profile['suffix']}）"
+    return _finish(
+        seed,
+        severity,
+        options,
+        scenario=scenario,
+        title=title,
+        description=profile["description"],
+        hazard_label=profile["hazard_label"],
+        trapped_label=profile["trapped_label"],
+        zones=zones,
+        edges=edges,
+        resources=dict(profile["resources"]),
+    )
+
 
 def list_scenarios() -> list[dict]:
     return [
@@ -303,14 +429,18 @@ def build_scenario(
     severity: int = 3,
     scenario: str = DEFAULT_SCENARIO,
     options: ScenarioOptions | None = None,
+    map_spec: MapSpec | None = None,
 ) -> SimState:
     """按场景 id 生成一次突发事件。未知 id 抛 ValueError。
 
     options 用于演示时的即时调整：人数规模倍数、校车数、冲锋舟数。
+    map_spec 非空时在外部地图上生成事件；为空则使用内置演示地图。
     """
     spec = SCENARIOS.get(scenario)
     if spec is None:
         raise ValueError(f"未知场景：{scenario}")
     severity = max(1, min(3, int(severity)))
+    if map_spec is not None:
+        return _build_on_map(map_spec, scenario, seed, severity, options or ScenarioOptions())
     builder: Callable[[int, int, ScenarioOptions], SimState] = spec["build"]
     return builder(seed, severity, options or ScenarioOptions())

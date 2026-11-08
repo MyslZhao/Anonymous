@@ -35,6 +35,51 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS maps (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )
+            """
+        )
+
+
+# ---------------------------------------------------------------- 自定义地图
+
+
+def save_map(map_id: str, name: str, payload: dict) -> None:
+    init_db()
+    created = time.strftime("%Y-%m-%d %H:%M:%S")
+    with _LOCK, _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO maps (id, name, created_at, payload) VALUES (?,?,?,?)",
+            (map_id, name, created, json.dumps(payload, ensure_ascii=False)),
+        )
+
+
+def load_map(map_id: str) -> dict | None:
+    init_db()
+    with _LOCK, _connect() as conn:
+        row = conn.execute("SELECT payload FROM maps WHERE id = ?", (map_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except json.JSONDecodeError:
+        return None
+
+
+def list_maps(limit: int = 50) -> list[dict]:
+    init_db()
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, created_at FROM maps ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [{"id": row[0], "name": row[1], "created_at": row[2]} for row in rows]
 
 
 def save_run(seed: int, severity: int, decision_agent: bool, payload: dict) -> int:

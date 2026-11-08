@@ -1,4 +1,4 @@
-"""模拟引擎：把裁决后的方案作用到校园状态上，产出可量化结果。"""
+﻿"""模拟引擎：把裁决后的方案作用到校园状态上，产出可量化结果。"""
 
 from __future__ import annotations
 
@@ -145,13 +145,14 @@ def baseline_outcome(state: SimState) -> dict:
     at_risk = 0.0
     casualties = 0.0
     isolated = 0
+    care = state.care_zones()
     for zone in state.zones.values():
         trapped = zone["trapped"]
         if trapped <= 0:
             continue
         h = min(1.0, zone["hazard"] / 10)
         factor = 0.15 + 0.35 * h
-        if not (state.path_exists(zone["id"], "clinic") or state.path_exists(zone["id"], "gym")):
+        if not any(state.path_exists(zone["id"], target) for target in care):
             factor *= 1.15
             isolated += 1
         at_risk += trapped * factor

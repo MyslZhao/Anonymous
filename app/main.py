@@ -1,4 +1,4 @@
-﻿"""FastAPI 入口：页面、场景、模拟接口、SSE 事件流、历史记录。"""
+"""FastAPI 入口：页面、场景、模拟接口、SSE 事件流、历史记录。"""
 
 from __future__ import annotations
 
@@ -13,10 +13,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.agents.coordinator import run_simulation, stream_simulation
 from app.config import settings
+from app.data.maps import MapSpec, MapValidationError, new_map_id, validate_map
 from app.data.scenarios import DEFAULT_SCENARIO, SCENARIOS, ScenarioOptions, build_scenario, list_scenarios
 from app.engine.rules import OBJECTIVES
 from app.engine.simulator import snapshot
-from app.storage import init_db, list_runs
+from app.storage import init_db, list_maps, list_runs, load_map, save_map
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -41,6 +42,16 @@ def _check_objective(objective: str) -> str:
 
 def _options(scale: float, buses: int | None, boats: int | None) -> ScenarioOptions:
     return ScenarioOptions.clamp(population_scale=scale, buses=buses, boats=boats)
+
+
+def _load_map(map_id: str | None) -> tuple[str | None, MapSpec | None]:
+    """按 map_id 取地图定义；不传则返回 (None, None)，走内置演示地图。"""
+    if not map_id:
+        return None, None
+    payload = load_map(map_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"地图不存在：{map_id}")
+    return map_id, MapSpec.model_validate(payload)
 
 
 def _check_scenario(scenario: str) -> str:
@@ -78,6 +89,44 @@ async def scenarios() -> dict:
     return {"scenarios": list_scenarios(), "default": DEFAULT_SCENARIO}
 
 
+@app.get("/api/maps")
+async def maps() -> dict:
+    return {"maps": list_maps()}
+
+
+@app.post("/api/maps", status_code=201)
+async def create_map(spec: MapSpec) -> dict:
+    try:
+        validate_map(spec)
+    except MapValidationError as exc:
+        raise HTTPException(status_code=400, detail={"message": "地图校验失败", "errors": exc.errors}) from exc
+    map_id = new_map_id()
+    save_map(map_id, spec.name, spec.model_dump())
+    return {
+        "map_id": map_id,
+        "name": spec.name,
+        "zones": len(spec.zones),
+        "edges": len(spec.edges),
+        "roles": _roles_preview(spec),
+    }
+
+
+@app.get("/api/maps/{map_id}")
+async def get_map(map_id: str) -> dict:
+    payload = load_map(map_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"地图不存在：{map_id}")
+    spec = MapSpec.model_validate(payload)
+    return {"map_id": map_id, **spec.model_dump(), "roles": _roles_preview(spec)}
+
+
+def _roles_preview(spec: MapSpec) -> dict:
+    from app.data.maps import derive_roles, map_to_state_parts
+
+    zones, _, _ = map_to_state_parts(spec)
+    return derive_roles(zones)
+
+
 @app.get("/api/scenario")
 async def scenario(
     seed: int = Query(7, ge=0, le=9999),
@@ -88,9 +137,13 @@ async def scenario(
     boats: int | None = Query(None, ge=0, le=10),
     objective: str = Query("rescue"),
     rounds: int = Query(1, ge=1, le=3),
+    map_id: str | None = Query(None),
 ) -> dict:
-    state = build_scenario(seed, severity, _check_scenario(scenario), _options(scale, buses, boats))
-    return {**snapshot(state), "mode": settings.mode_label}
+    _, map_spec = _load_map(map_id)
+    state = build_scenario(
+        seed, severity, _check_scenario(scenario), _options(scale, buses, boats), map_spec
+    )
+    return {**snapshot(state), "mode": settings.mode_label, "map_id": map_id}
 
 
 @app.post("/api/simulate")
@@ -104,7 +157,9 @@ async def simulate(
     boats: int | None = Query(None, ge=0, le=10),
     objective: str = Query("rescue"),
     rounds: int = Query(1, ge=1, le=3),
+    map_id: str | None = Query(None),
 ) -> dict:
+    resolved_id, map_spec = _load_map(map_id)
     return await run_simulation(
         seed=seed,
         severity=severity,
@@ -113,6 +168,8 @@ async def simulate(
         options=_options(scale, buses, boats),
         objective=_check_objective(objective),
         rounds=rounds,
+        map_spec=map_spec,
+        map_id=resolved_id,
     )
 
 
@@ -131,8 +188,10 @@ async def simulate_stream(
     boats: int | None = Query(None, ge=0, le=10),
     objective: str = Query("rescue"),
     rounds: int = Query(1, ge=1, le=3),
+    map_id: str | None = Query(None),
 ) -> StreamingResponse:
     _check_scenario(scenario)
+    resolved_id, map_spec = _load_map(map_id)
 
     async def generator():
         try:
@@ -144,6 +203,8 @@ async def simulate_stream(
                 _options(scale, buses, boats),
                 _check_objective(objective),
                 rounds,
+                map_spec,
+                resolved_id,
             ):
                 yield _sse(event)
                 await asyncio.sleep(0.05)  # 让前端能真正“逐条浮现”，而不是瞬间刷完

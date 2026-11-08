@@ -14,6 +14,29 @@ class SimState:
     zones: dict[str, dict] = field(default_factory=dict)
     edges: dict[str, dict] = field(default_factory=dict)
     resources: dict[str, int] = field(default_factory=dict)
+    roles: dict = field(default_factory=dict)
+
+    # ---------- 角色 ----------
+
+    def medical_zone(self) -> str | None:
+        return self.roles.get("medical") or ("clinic" if "clinic" in self.zones else None)
+
+    def shelter_zones(self) -> list[str]:
+        shelters = [z for z in (self.roles.get("shelters") or []) if z in self.zones]
+        if shelters:
+            return shelters
+        return [z for z in ("gym", "gate") if z in self.zones]
+
+    def depot_zone(self) -> str | None:
+        return self.roles.get("depot") or ("teaching" if "teaching" in self.zones else None)
+
+    def care_zones(self) -> list[str]:
+        """能提供救治/避难的目标：医疗区 + 避难所。"""
+        zones = list(self.shelter_zones())
+        medical = self.medical_zone()
+        if medical and medical not in zones:
+            zones.append(medical)
+        return [z for z in zones if z in self.zones]
 
     # ---------- 查询 ----------
 
@@ -101,16 +124,17 @@ class SimState:
     def isolating_edges(self, extra_closed: set[str] | None = None) -> list[str]:
         """返回“一旦封锁，就会让仍有被困人员的区域失去唯一通道”的边。"""
         risky: list[str] = []
+        care = self.care_zones()
+        if not care:
+            return risky
         for eid, edge in self.edges.items():
             if not edge["open"]:
                 continue
             blocked = set(extra_closed or set()) | {eid}
             for zid in self.trapped_zones():
-                # 判据：封锁前能到达医务室或避难所，封锁后不能 —— 即被孤立
-                before = self.path_exists(zid, "clinic") or self.path_exists(zid, "gym")
-                after = self.path_exists(zid, "clinic", blocked) or self.path_exists(
-                    zid, "gym", blocked
-                )
+                # 判据：封锁前能到救治点，封锁后不能 —— 即被孤立
+                before = any(self.path_exists(zid, zone) for zone in care)
+                after = any(self.path_exists(zid, zone, blocked) for zone in care)
                 if before and not after:
                     risky.append(eid)
                     break
@@ -126,6 +150,7 @@ class SimState:
             "zones": list(self.zones.values()),
             "edges": list(self.edges.values()),
             "resources": dict(self.resources),
+            "roles": dict(self.roles),
             "trapped_total": self.total_trapped(),
             "blocked_roads": [e["name"] for e in self.edges.values() if not e["open"]],
         }

@@ -153,6 +153,9 @@
       <option value="3">3 轮</option>
     </select>
   </label>
+  <label class="field">地图 ID
+    <input type="text" id="mapId" placeholder="留空=演示地图" style="min-width:130px" />
+  </label>
   <label class="toggle" title="路线 B：独立决策 Agent 以整体利益最大化重新编排方案">
     <input type="checkbox" id="decision" /> 决策 Agent（路线 B）
   </label>
@@ -617,8 +620,10 @@ function start() {
   });
   const buses = $("buses").value.trim();
   const boats = $("boats").value.trim();
+  const mapId = $("mapId").value.trim();
   if (buses !== "") params.set("buses", buses);
   if (boats !== "") params.set("boats", boats);
+  if (mapId !== "") params.set("map_id", mapId);
   const es = new EventSource("/api/simulate/stream?" + params);
   state.es = es;
   es.onmessage = (e) => handle(JSON.parse(e.data));

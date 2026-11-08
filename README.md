@@ -1,9 +1,9 @@
-﻿# CampusMind · 校园多 Agent 应急协同决策平台
+# CampusMind · 校园多 Agent 应急协同决策平台
 
 > 多个专业 AI 角色并行出方案，确定性规则引擎负责校验与裁决。
 > **AI 只提议，程序负责判定与执行。**
 
-![python](https://img.shields.io/badge/python-3.12-3776AB) ![tests](https://img.shields.io/badge/tests-109%20passed-brightgreen) ![mode](https://img.shields.io/badge/mock-可离线运行-blue)
+![python](https://img.shields.io/badge/python-3.12-3776AB) ![tests](https://img.shields.io/badge/tests-125%20passed-brightgreen) ![mode](https://img.shields.io/badge/mock-可离线运行-blue)
 
 ---
 
@@ -29,7 +29,7 @@ uv run python run.py                      # http://127.0.0.1:8000
 填好 `DEEPSEEK_API_KEY` 重启即切换到真实模型，页面右上角徽标会显示当前模式。
 
 ```powershell
-uv run pytest                             # 109 个用例
+uv run pytest                             # 125 个用例
 ```
 
 ## 3. 能做什么
@@ -53,6 +53,7 @@ uv run pytest                             # 109 个用例
 | 目标函数 `objective` | `rescue` / `fairness` / `economy` | 救人优先 / 区域公平 / 资源最省 |
 | 轮次 `rounds` | 1–3 | 每轮之间态势恶化，重新决策 |
 | 决策 Agent `decision_agent` | on / off | 路线 A（规则仲裁）↔ 路线 B（全局编排） |
+| 地图 `map_id` | 上传后获得 | 使用自定义地图；留空用演示地图（见 §5） |
 
 ### 3.3 一次模拟发生了什么
 
@@ -155,7 +156,103 @@ uv run pytest                             # 109 个用例
 物资投送 → 学生宿舍B：食堂路 → 北区路
 ```
 
-## 5. 实测效果（live 模式，seed=7，1 轮）
+## 5. 自定义地图（对外 API）
+
+内置的 8 区域 / 11 条道路只是演示地图。**不传 `map_id` 时行为与之前完全一致**；传了就用外部拓扑。
+
+### 5.1 地图就是一份 JSON
+
+```json
+{
+  "name": "北校区",
+  "zones": [
+    {"id": "d1", "name": "一号宿舍", "kind": "residential", "x": 120, "y": 120, "population": 300},
+    {"id": "t1", "name": "教学楼",   "kind": "dense",       "x": 320, "y": 160, "population": 260},
+    {"id": "c1", "name": "医务点",   "kind": "medical",     "x": 420, "y": 300, "population": 10},
+    {"id": "s1", "name": "体育馆",   "kind": "shelter",     "x": 520, "y": 420, "population": 20},
+    {"id": "g1", "name": "校门",     "kind": "corridor",    "x": 120, "y": 420, "population": 40}
+  ],
+  "edges": [
+    {"id": "r1", "a": "d1", "b": "t1", "name": "主路"},
+    {"id": "r2", "a": "t1", "b": "c1", "name": "医务路"},
+    {"id": "r3", "a": "t1", "b": "s1", "name": "避难通道"},
+    {"id": "r4", "a": "d1", "b": "g1", "name": "环路"},
+    {"id": "r5", "a": "g1", "b": "s1", "name": "南门路", "critical": true}
+  ],
+  "resources": {"buses": 3}
+}
+```
+
+**区域 `kind` 决定它在场景中的角色**，不需要你指定谁是被困区：
+
+| kind | 语义 | 用途 |
+| --- | --- | --- |
+| `residential` | 住宿区 | 优先成为受困区 |
+| `dense` | 教学/办公密集区 | 次优先受困区；也可作为物资集散点 |
+| `flow` | 人流区（食堂等） | 第三顺位受困区 |
+| `medical` | 医疗点 | 医疗队出发点（必填，且唯一） |
+| `shelter` | 避难所 | 疏散目标（至少一个） |
+| `corridor` | 通道/校门 | 仅作通行节点 |
+
+`critical: true` 表示该道路是重点通道，事件生成时会尽量保留它。
+
+### 5.2 提交地图
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/maps \
+  -H "Content-Type: application/json" \
+  -d @map.json
+```
+
+```json
+{
+  "map_id": "map-23a72157",
+  "name": "北校区",
+  "zones": 5,
+  "edges": 5,
+  "roles": {"medical": "c1", "shelters": ["s1"], "depot": "t1"}
+}
+```
+
+校验失败返回 400，`detail.errors` 里是逐条原因：
+
+```json
+{"detail": {"message": "地图校验失败", "errors": ["至少需要一个 kind=medical 的区域（医疗队出发点）"]}}
+```
+
+校验规则：
+
+| 规则 | 说明 |
+| --- | --- |
+| id 格式 | `[A-Za-z0-9_-]{1,32}`，区域内/道路内不得重复 |
+| 规模 | 3–40 个区域，≤80 条道路 |
+| 引用完整 | 道路两端必须是已声明的区域，且不能自环、不能重复连接同一对区域 |
+| 语义完整 | 至少一个 `medical`、一个 `shelter`、一个可受困区域（`residential`/`dense`/`flow`） |
+| 资源 | 键只能是 `medical_kits`/`volunteers`/`buses`/`boats`/`barricades`，值为非负整数；未写的项用默认值 |
+
+### 5.3 用自定义地图跑模拟
+
+所有模拟接口都接受 `map_id`，其余参数不变：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/simulate?map_id=map-23a72157&scenario=fire&seed=7"
+curl "http://127.0.0.1:8000/api/simulate/stream?map_id=map-23a72157&rounds=2"
+curl "http://127.0.0.1:8000/api/scenario?map_id=map-23a72157&severity=3"
+```
+
+`scenario` / `result` 事件都会回显 `map_id`；未知 id 返回 **404**。网页上的「地图 ID」输入框留空即用演示地图。
+
+### 5.4 事件如何落到你的地图上
+
+不需要你手写"哪里淹水"，系统按 `kind` 自动生成：
+
+1. 按 `residential → dense → flow` 顺序选出最多 3 个受困区，人数按场景画像分配；
+2. 危险度按场景类型落在受困区（积水/火势/影响/病例密度），其余区域保持低危险度；
+3. 如果是 Ⅱ 级以上事件，会**封闭部分道路来制造"唯一通道"**，但有一条硬约束：**封闭后每个受困区必须仍能到达所有救治点**，否则不封——避免自定义地图被生成成死局；
+4. 角色（医疗点 / 避难所 / 物资集散点）由 `kind` 自动推导，规则引擎与前端无需改动。
+
+## 6. 实测效果（live 模式，seed=7，1 轮）
+
 
 | 场景 | 受困 | 转移 | 医疗处置 | 物资覆盖 | 覆盖率 | 冲突拦截 | 无干预预计伤亡 | 风险覆盖 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -173,11 +270,11 @@ uv run pytest                             # 109 个用例
 
 > 覆盖率偏低是因为全校只有 2 辆校车（单轮最多转移 50 人）——这是资源约束下的真实结果，不是调度的失败。把 `buses` 调到 6，同样场景可转移 150 人。
 
-数据由 `scripts/benchmark.py` 生成，可复现（见 §6.5）。
+数据由 `scripts/benchmark.py` 生成，可复现（见 §7.5）。
 
-## 6. 工程成熟度（实测，非估算）
+## 7. 工程成熟度（实测，非估算）
 
-### 6.1 时延与成功率
+### 7.1 时延与成功率
 
 | 场景 | 平均 | p95 | 成功率 |
 | --- | --- | --- | --- |
@@ -188,7 +285,7 @@ uv run pytest                             # 109 个用例
 
 8 路并发的时延不是 8×6.5s——因为全局 AI 并发上限是 4，请求会排队；成功率高说明是在等待而不是失败。演示场景（1–3 位评委）用不到这个并发量。
 
-### 6.2 故障与降级路径
+### 7.2 故障与降级路径
 
 | 故障 | 处理 |
 | --- | --- |
@@ -198,7 +295,7 @@ uv run pytest                             # 109 个用例
 | 决策 Agent 返回裸对象 / 空方案 | 归一化兼容 + 要求至少 3 项，否则重试，仍失败回退路线 A |
 | DeepSeek 超时 / 网络错误 | 单角色降级，不影响整轮；异常写入该角色的理由 |
 
-### 6.3 单 worker 的依据
+### 7.3 单 worker 的依据
 
 2 核 2GB 上**不用 gunicorn 多 worker**，原因是正确性而不是性能：
 
@@ -208,13 +305,13 @@ uv run pytest                             # 109 个用例
 4. SQLite 并发写需要额外处理；
 5. 峰值叠加易触发 OOM，演示现场最怕。
 
-真正的并发能力来自异步 I/O：单 worker 下 8 路并发请求全部成功（见 §6.1）。
+真正的并发能力来自异步 I/O：单 worker 下 8 路并发请求全部成功（见 §7.1）。
 
-### 6.4 成本
+### 7.4 成本
 
 每次模拟约 11.3k 字符输入（六套提示词）+ 1.3k 字符输出，按中文与 JSON 的常见折算约 **7–8k token/次**。以 deepseek-chat 官方定价估算，单次运行成本在**分级钱**量级；跑 100 次演示的消耗可忽略，但不要写死循环压测。
 
-### 6.5 复现
+### 7.5 复现
 
 ```powershell
 uv run python -m scripts.benchmark --seeds 10 --mode mock      # 离线基线
@@ -222,10 +319,10 @@ uv run python -m scripts.benchmark --seeds 5  --mode live --decision
 uv run python -m scripts.benchmark --seeds 0 --http-concurrency 8
 ```
 
-## 7. 测试
+## 8. 测试
 
 ```
-109 passed in 1.4s
+125 passed in 2.4s
 ```
 
 | 用例文件 | 条数 | 覆盖 |
@@ -233,16 +330,17 @@ uv run python -m scripts.benchmark --seeds 0 --http-concurrency 8
 | `test_state.py` | 5 | 可达性、孤立通道、场景确定性 |
 | `test_scenarios.py` | 22 | 四场景生成、规模/运力、端到端、焦点分配 |
 | `test_rules.py` | 16 | 资源不超发、封路降级、路径阻断、驳回分支、去重 |
-| `test_llm_contract.py` | 17 | JSON 容错、区域/道路填反、角色边界 |
+| `test_llm_contract.py` | 18 | JSON 容错、区域/道路填反、角色边界、地图 schema 注入 |
 | `test_decision.py` | 10 | 空方案归一化、重试、回退、完整性 |
 | `test_baseline.py` | 5 | 反事实基线、覆盖率钳制 |
 | `test_revision.py` | 4 | 驳回后重申请、循环上限、mock 不空转 |
 | `test_objective.py` | 12 | 三种目标函数、路线记录、多轮累计 |
-| `test_pipeline.py` / `test_api.py` | 4 / 14 | 端到端、SSE 顺序、参数校验、400/422 |
+| `test_maps.py` | 11 | 地图校验、角色推导、自定义地图端到端 |
+| `test_pipeline.py` / `test_api.py` | 4 / 18 | 端到端、SSE 顺序、参数校验、地图 400/404 |
 
 重点保护的是"看起来能跑、其实会炸"的分支：mock 模式碰不到的驳回路径、模型输出畸形、决策 Agent 回退。
 
-## 8. 部署
+## 9. 部署
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -256,7 +354,7 @@ uv run python run.py --host 0.0.0.0 --port 8000
 - 单 worker 启动，**不要套 gunicorn**
 - 健康检查：`curl http://127.0.0.1:8000/api/health`，`mock:false` 表示已接真实模型
 
-### 8.1 API
+### 9.1 API
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -264,12 +362,15 @@ uv run python run.py --host 0.0.0.0 --port 8000
 | GET | `/api/health` | 健康检查与当前模式 |
 | GET | `/api/scenarios` | 场景列表 |
 | GET | `/api/objectives` | 目标函数列表 |
-| GET | `/api/scenario?scenario=&seed=&severity=&scale=&buses=&boats=` | 场景快照 |
-| POST | `/api/simulate?scenario=&seed=&severity=&scale=&buses=&boats=&objective=&rounds=&decision_agent=` | 同步模拟 |
+| GET | `/api/maps` | 已上传的自定义地图 |
+| POST | `/api/maps` | 提交地图定义（§5） |
+| GET | `/api/maps/{map_id}` | 读取地图定义 |
+| GET | `/api/scenario?scenario=&seed=&severity=&scale=&buses=&boats=&map_id=` | 场景快照 |
+| POST | `/api/simulate?scenario=&seed=&severity=&scale=&buses=&boats=&objective=&rounds=&decision_agent=&map_id=` | 同步模拟 |
 | GET | `/api/simulate/stream?...` | SSE 事件流 |
 | GET | `/api/history?limit=` | 历史记录 |
 
-## 9. 目录结构
+## 10. 目录结构
 
 ```
 app/
@@ -277,7 +378,8 @@ app/
   config.py            .env、mock 判定、并发上限、重试轮数
   models.py            Proposal / PlanItem / Conflict / Metrics 契约
   data/campus.py       8 区域、11 条道路、资源库存
-  data/scenarios.py    四个场景生成器与注册表
+  data/scenarios.py    四个场景生成器与注册表（含自定义地图生成策略）
+  data/maps.py         自定义地图 schema / 校验 / 角色推导
   engine/state.py      状态、可达性 BFS、孤立通道检测
   engine/rules.py      收益估算、目标函数、资源与路径校验、冲突裁决
   engine/simulator.py  执行、指标、反事实基线、轮次演进
@@ -289,11 +391,11 @@ app/
   storage.py           SQLite 存档
   static/index.html    单页前端（无构建步骤）
 scripts/               跑分（benchmark.py）与离线依赖打包
-tests/                 109 个用例
+tests/                 125 个用例
 docs/PLAN.md           两天工时拆分、演示脚本、待决事项
 ```
 
-## 10. 设计取舍
+## 11. 设计取舍
 
 - **六个角色共用一个模型**：不是六台服务器、六个模型，靠提示词区分角色。省成本、省显存，代价是角色边界必须由程序约束（见 §4.1）。
 - **规则引擎而不是让 LLM 自检**：确定性、可复现、可测试，且能回答"AI 说错了你们怎么发现"。
@@ -301,10 +403,12 @@ docs/PLAN.md           两天工时拆分、演示脚本、待决事项
 - **前端零构建**：单页 HTML + 原生 JS，`uv run` 即可演示，不需要 node 工具链。
 - **不追求"完美方案"**：覆盖率受运力限制是真实的，把限制显示出来比藏起来更可信。
 
-## 11. 已知限制
+## 12. 已知限制
 
 - 运力约束下覆盖率只有 25%–43%，提升依赖调参而非算法；
 - 各场景冲突密度不均，食物中毒最"安静"（无孤立通道）；
 - 多轮 + 决策 Agent 组合约 20s，演示建议二选一；
 - 决策 Agent 在约束更紧的第 2 轮有约 20% 回退率；
+- 自定义地图只校验结构与语义，**不校验可行性之外的合理性**（比如把避难所画在校门外）；
+- 地图接口暂无删除/覆盖，只能新增；也没有鉴权，定位是演示原型；
 - 无鉴权、无限流、无多会话隔离，定位是演示原型而非生产系统。
