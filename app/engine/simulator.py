@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.engine.rules import BUS_CAPACITY, MEDICAL_PER_KIT, SUPPLY_PER_VOLUNTEER
+from app.engine.rules import BOAT_CAPACITY, BUS_CAPACITY, MEDICAL_PER_KIT, SUPPLY_PER_VOLUNTEER
 from app.engine.state import SimState
 from app.models import Metrics, PlanItem, Resolution
 
@@ -20,16 +20,21 @@ def apply_plan(state: SimState, resolution: Resolution) -> tuple[list[dict], Met
             if not zone:
                 continue
             buses = item.resources.get("buses", 0)
-            moved = min(zone["trapped"], buses * BUS_CAPACITY)
+            boats = item.resources.get("boats", 0)
+            capacity = buses * BUS_CAPACITY + boats * BOAT_CAPACITY
+            moved = min(zone["trapped"], capacity)
             zone["trapped"] -= moved
             zone["evacuated"] += moved
             rescued += moved
             buses_used += buses
+            shelter = state.shelter_zones()[0] if state.shelter_zones() else None
+            destination = state.zone_name(shelter) if shelter else "避难所"
+            vehicles = f"{buses} 辆校车" + (f"、{boats} 艘冲锋舟" if boats else "")
             effects.append(
                 {
                     "action": item.action,
                     "zone": zone["name"],
-                    "text": f"转移 {moved} 人至体育馆（{buses} 辆校车）",
+                    "text": f"转移 {moved} 人至{destination}（{vehicles}）",
                     "value": moved,
                 }
             )

@@ -1,4 +1,4 @@
-"""六角色元信息（前端配色与展示名）。"""
+﻿"""六角色元信息（前端配色与展示名）。"""
 
 from __future__ import annotations
 
@@ -10,10 +10,6 @@ AGENT_META: dict[str, dict] = {
     "traffic": {"name": "交通", "color": "#60a5fa", "icon": "↔", "desc": "通行状况、车辆路线与救援路径规划"},
     "student": {"name": "学生事务", "color": "#f472b6", "icon": "☺", "desc": "学生反馈、人员需求与志愿者组织"},
 }
-
-
-def agent_name(agent: str) -> str:
-    return AGENT_META.get(agent, {}).get("name", agent)
 
 
 # 每个角色允许提出的行动。越权提议（例如“学生事务”申请医疗队）会被直接打回，

@@ -1,4 +1,4 @@
-"""FastAPI 入口：页面、场景、模拟接口、SSE 事件流、历史记录。"""
+﻿"""FastAPI 入口：页面、场景、模拟接口、SSE 事件流、历史记录。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,28 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="CampusMind", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="CampusMind", version="0.3.0", lifespan=lifespan)
+
+# 前端是单页 + 内联脚本，因此脚本/样式仍需 unsafe-inline；
+# 但显式限制 default-src/connect-src，避免外部脚本与数据外带。
+CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'"
+)
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", CSP)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -136,14 +157,14 @@ async def scenario(
     buses: int | None = Query(None, ge=0, le=20),
     boats: int | None = Query(None, ge=0, le=10),
     objective: str = Query("rescue"),
-    rounds: int = Query(1, ge=1, le=3),
     map_id: str | None = Query(None),
 ) -> dict:
+    _check_objective(objective)  # 场景快照与目标函数无关，但参数必须合法，避免调用方以为它生效
     _, map_spec = _load_map(map_id)
     state = build_scenario(
         seed, severity, _check_scenario(scenario), _options(scale, buses, boats), map_spec
     )
-    return {**snapshot(state), "mode": settings.mode_label, "map_id": map_id}
+    return {**snapshot(state), "mode": settings.mode_label, "map_id": map_id, "objective": objective}
 
 
 @app.post("/api/simulate")
@@ -191,6 +212,7 @@ async def simulate_stream(
     map_id: str | None = Query(None),
 ) -> StreamingResponse:
     _check_scenario(scenario)
+    _check_objective(objective)  # 在开始推流前校验，非法目标函数返回 400 而不是 200 + error 事件
     resolved_id, map_spec = _load_map(map_id)
 
     async def generator():
@@ -201,7 +223,7 @@ async def simulate_stream(
                 decision_agent,
                 scenario,
                 _options(scale, buses, boats),
-                _check_objective(objective),
+                objective,
                 rounds,
                 map_spec,
                 resolved_id,

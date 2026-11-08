@@ -41,23 +41,24 @@ DECISION_SYSTEM = """你是校园应急决策 Agent。你的目标不是复述�
 
 
 def _mock_plan(state: SimState, proposals: list[Proposal]) -> tuple[list[Proposal], str]:
-    """离线决策：以“覆盖更多受困区域”为目标重新分配校车。"""
+    """离线决策：完全按当前态势生成，不依赖任何具体地图 id。"""
     ranked = sorted(
         (z for z in state.zones.values() if z["trapped"] > 0),
         key=lambda z: z["trapped"],
         reverse=True,
     )
+    resources = state.resources
     plan: list[Proposal] = []
-    buses = state.resources["buses"]
-    if ranked:
-        share = max(1, buses // min(len(ranked), buses))
-        states = {"command": "command", "medical": "medical", "security": "security",
-                  "logistics": "logistics", "traffic": "traffic", "student": "student"}
-        for index, zone in enumerate(ranked[:buses]):
-            agent = "traffic" if index == 0 else "student"
+
+    # 1) 校车：覆盖尽可能多的受困区（每区至少 1 辆）
+    buses = max(0, int(resources.get("buses", 0)))
+    scopes = ranked[: min(len(ranked), buses)] if buses else []
+    if scopes:
+        share = max(1, buses // len(scopes))
+        for index, zone in enumerate(scopes):
             plan.append(
                 Proposal(
-                    agent=states[agent],
+                    agent="traffic" if index == 0 else "student",
                     priority="high",
                     target_area=zone["id"],
                     action="evacuate",
@@ -65,48 +66,98 @@ def _mock_plan(state: SimState, proposals: list[Proposal]) -> tuple[list[Proposa
                     reason=f"按覆盖优先，为{zone['name']}分配 {share} 辆校车",
                 )
             )
-        top = ranked[0]
+
+    # 2) 医疗：医疗需求最高的区域
+    if state.zones:
+        target = max(state.zones.values(), key=lambda z: z["medical_need"])
+        kits = min(6, int(resources.get("medical_kits", 0)))
+        if kits:
+            plan.append(
+                Proposal(
+                    agent="medical",
+                    priority="high",
+                    target_area=target["id"],
+                    action="send_medical_team",
+                    resource_required=ResourceRequest(medical_kits=kits, volunteers=4),
+                    reason=f"{target['name']}医疗需求最高",
+                )
+            )
+
+    # 3) 道路管控：挑一条能通过校验的路（通行中、且不是唯一通道）
+    road = _safe_close_road(state)
+    if road:
         plan.append(
             Proposal(
-                agent="medical",
+                agent="security",
                 priority="high",
-                target_area=top["id"],
-                action="send_medical_team",
-                resource_required=ResourceRequest(medical_kits=min(6, state.resources["medical_kits"]), volunteers=4),
-                reason=f"{top['name']}医疗需求最高",
+                target_area=road,
+                action="close_road",
+                resource_required=ResourceRequest(barricades=2),
+                reason="道路存在通行风险，但需保留救援通行",
             )
         )
-    plan.append(
-        Proposal(
-            agent="security",
-            priority="high",
-            target_area="2号道路",
-            action="close_road",
-            resource_required=ResourceRequest(barricades=2),
-            reason="道路存在通行风险，但需保留救援通行",
+
+    # 4) 物资：被困次高区域，没有则人口最多的区域
+    volunteers = int(resources.get("volunteers", 0))
+    if volunteers >= 2 and state.zones:
+        supply_target = (
+            ranked[1]
+            if len(ranked) > 1
+            else (ranked[0] if ranked else max(state.zones.values(), key=lambda z: z["population"]))
         )
-    )
-    plan.append(
-        Proposal(
-            agent="logistics",
-            priority="medium",
-            target_area=(ranked[1]["id"] if len(ranked) > 1 else "dorm_b"),
-            action="dispatch_supply",
-            resource_required=ResourceRequest(volunteers=8),
-            reason="保障滞留人员基本物资",
+        plan.append(
+            Proposal(
+                agent="logistics",
+                priority="medium",
+                target_area=supply_target["id"],
+                action="dispatch_supply",
+                resource_required=ResourceRequest(volunteers=min(8, volunteers)),
+                reason="保障滞留人员基本物资",
+            )
         )
-    )
-    plan.append(
-        Proposal(
-            agent="command",
-            priority="medium",
-            target_area="gate",
-            action="notify_students",
-            reason="全校广播避险通知",
+
+    # 5) 指挥：优先抢通已封闭道路，否则全校广播
+    closed = [edge for edge in state.edges.values() if not edge["open"]]
+    if closed and volunteers > 0:
+        plan.append(
+            Proposal(
+                agent="command",
+                priority="medium",
+                target_area=closed[0]["name"],
+                action="open_route",
+                resource_required=ResourceRequest(volunteers=min(4, volunteers)),
+                reason=f"抢通{closed[0]['name']}以恢复救援通道",
+            )
         )
-    )
+    elif state.zones:
+        plan.append(
+            Proposal(
+                agent="command",
+                priority="low",
+                target_area=next(iter(state.zones)),
+                action="notify_students",
+                reason="全校广播避险通知",
+            )
+        )
+
     objective = "覆盖尽可能多的受困区域，而非把全部车辆压在一个区域"
     return plan, objective
+
+
+def _safe_close_road(state: SimState) -> str | None:
+    """挑一条能通过规则校验的封路目标：当前通行、且封锁后不会孤立任何受困区。"""
+    risky = set(state.isolating_edges())
+    candidates = [edge for edge in state.edges.values() if edge["open"] and edge["id"] not in risky]
+    if not candidates:
+        return None
+    trapped_ids = set(state.trapped_zones())
+    candidates.sort(
+        key=lambda edge: (
+            0 if (edge["a"] in trapped_ids or edge["b"] in trapped_ids) else 1,
+            edge["id"],
+        )
+    )
+    return candidates[0]["name"]
 
 
 PLAN_KEYS = ("plan", "plans", "actions", "decisions", "plan_items")
@@ -128,7 +179,7 @@ ACTION_ALIASES = {
     "派医疗队": "send_medical_team",
     "封路": "close_road",
     "道路管控": "close_road",
-    "转发": "evacuate",
+    "转运": "evacuate",
     "转移": "evacuate",
     "疏散": "evacuate",
     "物资投送": "dispatch_supply",

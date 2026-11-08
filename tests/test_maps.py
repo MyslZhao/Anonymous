@@ -3,13 +3,16 @@
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 from app.agents.coordinator import run_simulation
+from app.agents.decision import decide
 from app.agents.mock import mock_proposal
 from app.data.maps import MapSpec, MapValidationError, derive_roles, map_to_state_parts, validate_map
-from app.data.scenarios import build_scenario
+from app.data.scenarios import ScenarioOptions, build_scenario
 from app.engine.rules import resolve
-from app.models import ALL_AGENTS
+from app.engine.simulator import apply_plan
+from app.models import ALL_AGENTS, Proposal, ResourceRequest
 
 MAP = {
     "name": "北校区",
@@ -119,3 +122,80 @@ def test_custom_map_end_to_end_reports_map_id():
     assert payload["scenario"]["map_id"] == "map-test"
     assert {z["id"] for z in payload["scenario"]["zones"]} == {"d1", "t1", "c1", "s1", "g1"}
     assert payload["result"]["metrics"]["trapped_total"] > 0
+
+
+# ---- 新补充：连通性 / 命名唯一 / 坐标范围 / 受困类型 ----
+
+
+def test_disconnected_map_rejected():
+    edges = [edge for edge in MAP["edges"] if edge["id"] in {"r1", "r2", "r3"}]
+    with pytest.raises(MapValidationError) as exc:
+        validate_map(MapSpec.model_validate({**MAP, "edges": edges}))
+    assert any("不连通" in error for error in exc.value.errors)
+
+
+def test_duplicate_zone_name_rejected():
+    zones = MAP["zones"] + [
+        {"id": "z9", "name": "教学楼", "kind": "corridor", "x": 100, "y": 500, "population": 10}
+    ]
+    edges = MAP["edges"] + [{"id": "r9", "a": "z9", "b": "g1", "name": "九号路"}]
+    with pytest.raises(MapValidationError) as exc:
+        validate_map(MapSpec.model_validate({**MAP, "zones": zones, "edges": edges}))
+    assert any("区域名称重复" in error for error in exc.value.errors)
+
+
+def test_duplicate_road_name_rejected():
+    edges = MAP["edges"] + [{"id": "r9", "a": "g1", "b": "c1", "name": "主路"}]
+    with pytest.raises(MapValidationError) as exc:
+        validate_map(MapSpec.model_validate({**MAP, "edges": edges}))
+    assert any("道路名称重复" in error for error in exc.value.errors)
+
+
+def test_coordinate_outside_canvas_rejected():
+    zones = [dict(MAP["zones"][0], x=5000)] + MAP["zones"][1:]
+    with pytest.raises(ValidationError):
+        MapSpec.model_validate({**MAP, "zones": zones})
+
+
+def test_only_trappable_kinds_get_trapped():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm", map_spec=_spec())
+    for zone in state.zones.values():
+        if zone["kind"] in {"medical", "shelter", "corridor"}:
+            assert zone["trapped"] == 0, f"{zone['kind']} 区域不应有被困人员"
+
+
+# ---- 新补充：离线决策 Agent 的正确性 ----
+
+
+def test_mock_decision_plan_works_on_custom_map():
+    state = build_scenario(seed=7, severity=3, scenario="rainstorm", map_spec=_spec())
+    proposals = [mock_proposal(role, state) for role in ALL_AGENTS]
+    resolution, trace, attempts, fallback = asyncio.run(decide(state, proposals))
+    assert fallback is False, f"离线决策不应回退：{trace}"
+    assert len(resolution.items) >= 3
+
+
+def test_mock_decision_survives_zero_buses():
+    state = build_scenario(seed=7, severity=3, options=ScenarioOptions(buses=0))
+    proposals = [mock_proposal(role, state) for role in ALL_AGENTS]
+    resolution, trace, attempts, fallback = asyncio.run(decide(state, proposals))
+    assert not any("division" in line for line in trace)
+    assert fallback is False
+    assert resolution.items
+
+
+def test_boats_add_transport_capacity():
+    state = build_scenario(
+        seed=7, severity=3, scenario="rainstorm", options=ScenarioOptions(buses=2, boats=2)
+    )
+    proposal = Proposal(
+        agent="traffic",
+        priority="high",
+        target_area="dorm_a",
+        action="evacuate",
+        resource_required=ResourceRequest(buses=1, boats=2),
+    )
+    resolution = resolve(state, [proposal])
+    assert resolution.items
+    _, metrics = apply_plan(state, resolution)
+    assert metrics.rescued == 25 + 2 * 10

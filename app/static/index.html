@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
@@ -237,6 +237,14 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+// 所有来自服务端/模型的文本在拼进 innerHTML 前必须转义：
+// 地图里的区域名、模型给出的 reason 都可能包含 HTML
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch]));
+}
 const state = {
   zones: {}, edges: [], edgesByName: {}, proposals: 0, finished: false, es: null,
   hazardLabel: "危险度", trappedLabel: "被困", agentEls: {}
@@ -270,7 +278,7 @@ fetch("/api/objectives").then(r => r.json()).then(d => {
 }).catch(() => { $("objective").innerHTML = '<option value="rescue">救人优先</option>'; });
 
 function setStatus(text, busy) {
-  $("status").innerHTML = (busy ? '<span class="pulse"></span>' : "") + text;
+  $("status").innerHTML = (busy ? '<span class="pulse"></span>' : "") + esc(text);
 }
 
 /* ---------------- 地图 ---------------- */
@@ -306,10 +314,11 @@ function drawMap(data) {
     let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
     if (angle > 90 || angle < -90) angle += 180;
     const label = closed ? `${e.name} · 阻断` : e.name;
+    const safeLabel = esc(label);
     edges += `<text id="edge-label-${e.id}" x="${lx}" y="${ly}" fill="${closed ? "#fca5a5" : "#7f93b0"}"
       font-size="10.5" text-anchor="middle" dominant-baseline="middle"
       stroke="#0b1120" stroke-width="3" paint-order="stroke"
-      transform="rotate(${angle.toFixed(1)} ${lx.toFixed(1)} ${ly.toFixed(1)})">${label}</text>`;
+      transform="rotate(${angle.toFixed(1)} ${lx.toFixed(1)} ${ly.toFixed(1)})">${safeLabel}</text>`;
   });
 
   data.zones.forEach(z => {
@@ -321,7 +330,7 @@ function drawMap(data) {
         fill="#16223a" stroke="${trapped ? "#f43f5e" : "#2c3d5c"}" stroke-width="${trapped ? 2 : 1.5}"/>
       <clipPath id="clip-${z.id}"><rect x="${x + 2}" y="${y + 2}" width="${w - 4}" height="${h - 4}" rx="10"/></clipPath>
       <rect x="${x + 2}" y="${y + h - 2 - fillH}" width="${w - 4}" height="${fillH}" fill="url(#waterGrad)" clip-path="url(#clip-${z.id})"/>
-      <text x="${z.x}" y="${z.y - 6}" fill="#e6eefc" font-size="13" font-weight="600" text-anchor="middle">${z.name}</text>
+      <text x="${z.x}" y="${z.y - 6}" fill="#e6eefc" font-size="13" font-weight="600" text-anchor="middle">${esc(z.name)}</text>
       <text x="${z.x}" y="${z.y + 12}" fill="#9fb3cf" font-size="11" text-anchor="middle">
         ${trapped ? state.trappedLabel + " " + z.trapped + " 人" : state.hazardLabel + " " + z.hazard}
       </text>
@@ -422,12 +431,12 @@ function agentCardHtml(p, revised) {
   return `
     <div class="head">
       <div class="icon">${p.icon}</div>
-      <div class="name">${p.name}</div>
+      <div class="name">${esc(p.name)}</div>
       ${revised ? '<div class="pri" style="color:#fbbf24;border-color:#78350f;background:#231a08">已重申请</div>' : ""}
       <div class="pri ${p.priority}">${priText(p.priority)}</div>
     </div>
-    <div class="act">提出 <b>${p.action_text}</b> → ${p.target}</div>
-    <div class="reason">${p.reason || "—"}</div>
+    <div class="act">提出 <b>${esc(p.action_text)}</b> → ${esc(p.target)}</div>
+    <div class="reason">${esc(p.reason || "—")}</div>
     ${res ? `<div class="res">${res}</div>` : ""}`;
 }
 
@@ -519,9 +528,9 @@ function renderResolution(d) {
   } else {
     box.innerHTML = d.conflicts.map(c => `
       <div class="conflict ${c.kind}">
-        <div class="k">${kindText(c.kind)} · ${c.parties.join(" × ")}</div>
-        <div class="d">${c.detail}</div>
-        <div class="r">✓ ${c.resolution}</div>
+        <div class="k">${esc(kindText(c.kind))} · ${esc(c.parties.join(" × "))}</div>
+        <div class="d">${esc(c.detail)}</div>
+        <div class="r">✓ ${esc(c.resolution)}</div>
       </div>`).join("");
   }
   const plan = $("plan");
@@ -531,8 +540,8 @@ function renderResolution(d) {
     plan.innerHTML = d.items.map(i => `
       <div class="plan-item">
         <span class="t">${i.action_text}</span>
-        <span>${i.target}${i.modified ? "（已降级为警戒）" : ""}
-          <div class="m">${i.reason || ""}</div></span>
+        <span>${esc(i.target)}${i.modified ? "（已降级为警戒）" : ""}
+          <div class="m">${esc(i.reason || "")}</div></span>
       </div>`).join("");
   }
   $("planCount").textContent = d.items.length + " 项";
@@ -540,7 +549,7 @@ function renderResolution(d) {
   const rejected = d.rejected || [];
   if (rejected.length) {
     plan.insertAdjacentHTML("beforeend",
-      `<div class="empty" style="margin-top:8px">被驳回 ${rejected.length} 条：${rejected.map(r => agentZh(r.agent) + "「" + r.reason + "」").join("；")}</div>`);
+      `<div class="empty" style="margin-top:8px">被驳回 ${rejected.length} 条：${esc(rejected.map(r => agentZh(r.agent) + "「" + r.reason + "」").join("；"))}</div>`);
   }
 }
 
@@ -562,7 +571,7 @@ function renderResult(d) {
     ? d.effects
         .map(
           e =>
-            `<div class="effect">${e.round ? `<span class="round-tag">R${e.round}</span>` : ""}<i>✓</i><span>${e.text}${e.zone ? "（" + e.zone + "）" : ""}</span></div>`
+            `<div class="effect">${e.round ? `<span class="round-tag">R${e.round}</span>` : ""}<i>✓</i><span>${esc(e.text)}${e.zone ? "（" + esc(e.zone) + "）" : ""}</span></div>`
         )
         .join("")
     : '<div class="empty">没有产生实际效果</div>';
@@ -584,7 +593,7 @@ function renderResult(d) {
       <div class="effect"><i style="color:#f87171">✕</i><span>不介入：${b.window_minutes} 分钟内 ${b.at_risk} 人陷入危险${isolated}，预计 ${b.casualties} 人伤亡</span></div>
       <div class="effect"><i>✓</i><span>本方案：转移 ${d.metrics.rescued} 人、医疗处置 ${d.metrics.stabilized} 人、物资覆盖 ${d.metrics.supported} 人</span></div>
       <div class="effect"><i>▮</i><span>风险覆盖 <b>${covered}%</b></span></div>
-      <div class="empty" style="margin-top:6px">${b.note}</div>`;
+      <div class="empty" style="margin-top:6px">${esc(b.note)}</div>`;
   }
 
   if (d.comparison) {

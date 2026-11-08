@@ -92,6 +92,12 @@ def test_unknown_objective_returns_400():
     assert response.status_code == 400
 
 
+def test_scenario_and_stream_validate_objective_consistently():
+    with TestClient(app) as client:
+        assert client.get("/api/scenario", params={"objective": "whatever"}).status_code == 400
+        assert client.get("/api/simulate/stream", params={"objective": "whatever"}).status_code == 400
+
+
 def test_simulate_endpoint_returns_full_result():
     with TestClient(app) as client:
         data = client.post("/api/simulate", params={"seed": 7, "severity": 3}).json()

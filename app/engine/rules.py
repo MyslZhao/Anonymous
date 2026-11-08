@@ -1,4 +1,4 @@
-"""规则引擎：把六份 Agent 建议裁决成一份可执行方案。
+﻿"""规则引擎：把六份 Agent 建议裁决成一份可执行方案。
 
 核心原则：AI 只提议，这里判定“资源是否真的够、路是否真的通、行动是否冲突”。
 规则引擎从不调用大模型，因此结果完全可复现、可测试。
@@ -13,10 +13,9 @@ from app.engine.state import SimState
 
 PRIORITY_WEIGHT: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
 BUS_CAPACITY = 25
+BOAT_CAPACITY = 10  # 每艘冲锋舟单轮转移人数
 SUPPLY_PER_VOLUNTEER = 10
 MEDICAL_PER_KIT = 3
-SHELTERS = ("gym", "gate")
-DEPOT = "teaching"  # 物资集散点
 
 Objective = Literal["rescue", "fairness", "economy"]
 OBJECTIVES: dict[str, dict] = {
@@ -44,7 +43,8 @@ def benefit_estimate(state: SimState, proposal: Proposal) -> float:
     zone = state.zones.get(proposal.target_area)
     req = proposal.resource_required
     if proposal.action == "evacuate":
-        return float(min(zone["trapped"], req.buses * BUS_CAPACITY)) if zone else 0.0
+        capacity = req.buses * BUS_CAPACITY + req.boats * BOAT_CAPACITY
+        return float(min(zone["trapped"], capacity)) if zone else 0.0
     if proposal.action == "send_medical_team":
         if not zone:
             return 0.0
@@ -152,7 +152,6 @@ def resolve(state: SimState, proposals: list[Proposal], objective: str = "rescue
     )
 
     for proposal in ranked:
-        benefit = benefit_estimate(state, proposal)
         # 广播通知不占用实体资源，模型给 notify_students 挂资源一律忽略
         request = {} if proposal.action == "notify_students" else proposal.resource_required.as_dict()
         label = _target_label(state, proposal)

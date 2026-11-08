@@ -19,14 +19,16 @@ ZONE_KINDS = {"residential", "dense", "flow", "medical", "shelter", "corridor"}
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 MAX_ZONES = 40
 MAX_EDGES = 80
+CANVAS_WIDTH = 900
+CANVAS_HEIGHT = 570
 
 
 class ZoneSpec(BaseModel):
     id: str
     name: str = Field(min_length=1, max_length=40)
     kind: str
-    x: int = Field(ge=0, le=2000)
-    y: int = Field(ge=0, le=2000)
+    x: int = Field(ge=0, le=CANVAS_WIDTH)
+    y: int = Field(ge=0, le=CANVAS_HEIGHT)
     population: int = Field(default=0, ge=0, le=50000)
 
 
@@ -97,6 +99,38 @@ def validate_map(spec: MapSpec) -> None:
         errors.append("至少需要一个 kind=shelter 的区域（疏散避难所）")
     if not ({"residential", "dense", "flow"} & kinds):
         errors.append("至少需要一个可能有人被困的区域（kind 为 residential / dense / flow）")
+
+    # 名称唯一：名称会进入提示词、地图标注和"封闭某某路"的匹配
+    name_seen: dict[str, str] = {}
+    for zone in spec.zones:
+        if zone.name in name_seen:
+            errors.append(f"区域名称重复：{zone.name}（{name_seen[zone.name]} / {zone.id}）")
+        name_seen.setdefault(zone.name, zone.id)
+    road_seen: dict[str, str] = {}
+    for edge in spec.edges:
+        if edge.name in road_seen:
+            errors.append(f"道路名称重复：{edge.name}（{road_seen[edge.name]} / {edge.id}）")
+        road_seen.setdefault(edge.name, edge.id)
+
+    # 连通性：任何区域都必须能连到主图，否则场景生成后整轮行动都会被判"路径阻断"
+    adjacency: dict[str, set[str]] = {zid: set() for zid in zone_ids}
+    for edge in spec.edges:
+        if edge.a in adjacency and edge.b in adjacency and edge.a != edge.b:
+            adjacency[edge.a].add(edge.b)
+            adjacency[edge.b].add(edge.a)
+    if zone_ids:
+        start = next(iter(zone_ids))
+        visited = {start}
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            for nxt in adjacency[node]:
+                if nxt not in visited:
+                    visited.add(nxt)
+                    stack.append(nxt)
+        unreachable = sorted(zone_ids - visited)
+        if unreachable:
+            errors.append(f"地图不连通，以下区域无法到达其他区域：{unreachable}")
 
     for key in spec.resources:
         if key not in RESOURCES:

@@ -1,9 +1,9 @@
-﻿# CampusMind · 校园多 Agent 应急协同决策平台
+# CampusMind · 校园多 Agent 应急协同决策平台
 
 > 多个专业 AI 角色并行出方案，确定性规则引擎负责校验与裁决。
 > **AI 只提议，程序负责判定与执行。**
 
-![python](https://img.shields.io/badge/python-3.12-3776AB) ![tests](https://img.shields.io/badge/tests-125%20passed-brightgreen) ![mode](https://img.shields.io/badge/mock-可离线运行-blue)
+![python](https://img.shields.io/badge/python-3.12-3776AB) ![tests](https://img.shields.io/badge/tests-134%20passed-brightgreen) ![mode](https://img.shields.io/badge/mock-可离线运行-blue)
 
 ---
 
@@ -35,7 +35,7 @@ uv run python run.py                      # http://127.0.0.1:8000
 填好 `DEEPSEEK_API_KEY` 重启即切换到真实模型，页面右上角徽标会显示当前模式。
 
 ```powershell
-uv run pytest                             # 125 个用例
+uv run pytest                             # 134 个用例
 ```
 
 ## 3. 能做什么
@@ -55,7 +55,7 @@ uv run pytest                             # 125 个用例
 | --- | --- | --- |
 | 事件等级 `severity` | 1–3 | 危险度与被困规模 |
 | 人数规模 `scale` | 0.1–5 | 等比放大人口/被困/医疗需求 |
-| 校车 `buses` / 冲锋舟 `boats` | 0–20 / 0–10 | 转运运力，直接决定冲突激烈程度 |
+| 校车 `buses` / 冲锋舟 `boats` | 0–20 / 0–10 | 转运运力：校车 25 人/辆、冲锋舟 10 人/艘；直接决定冲突激烈程度 |
 | 目标函数 `objective` | `rescue` / `fairness` / `economy` | 救人优先 / 区域公平 / 资源最省 |
 | 轮次 `rounds` | 1–3 | 每轮之间态势恶化，重新决策 |
 | 决策 Agent `decision_agent` | on / off | 路线 A（规则仲裁）↔ 路线 B（全局编排） |
@@ -232,9 +232,14 @@ curl -X POST http://127.0.0.1:8000/api/maps \
 | --- | --- |
 | id 格式 | `[A-Za-z0-9_-]{1,32}`，区域内/道路内不得重复 |
 | 规模 | 3–40 个区域，≤80 条道路 |
+| 坐标 | `x` 0–900、`y` 0–570，与前端画布一致；超出会被直接拒绝而不是画到图外 |
 | 引用完整 | 道路两端必须是已声明的区域，且不能自环、不能重复连接同一对区域 |
+| 连通性 | 所有区域必须在同一张连通图上；断开的区域会让后续行动全部被判"路径阻断" |
+| 名称唯一 | 区域名、道路名都不能重复——名称会进入提示词，也用于"封闭某某路"的匹配 |
 | 语义完整 | 至少一个 `medical`、一个 `shelter`、一个可受困区域（`residential`/`dense`/`flow`） |
 | 资源 | 键只能是 `medical_kits`/`volunteers`/`buses`/`boats`/`barricades`，值为非负整数；未写的项用默认值 |
+
+只有 `residential` / `dense` / `flow` 三类区域会出现被困人员；医疗点、避难所、校门不会"被困"。
 
 ### 5.3 用自定义地图跑模拟
 
@@ -325,10 +330,19 @@ uv run python -m scripts.benchmark --seeds 5  --mode live --decision
 uv run python -m scripts.benchmark --seeds 0 --http-concurrency 8
 ```
 
+### 7.6 安全基线
+
+| 措施 | 说明 |
+| --- | --- |
+| 输出转义 | 所有来自模型/地图的文本（reason、区域名、道路名）经 `esc()` 转义后才拼进 DOM |
+| CSP | `default-src 'self'`、`connect-src 'self'`、`frame-ancestors 'none'`、`base-uri 'none'`；前端内联脚本使 `script-src` 仍需 `unsafe-inline` |
+| 响应头 | `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` |
+| 已知边界 | 地图上传接口无鉴权——演示原型定位，公网部署前应加令牌与配额 |
+
 ## 8. 测试
 
 ```
-125 passed in 2.4s
+134 passed in 3.3s
 ```
 
 | 用例文件 | 条数 | 覆盖 |
@@ -341,8 +355,8 @@ uv run python -m scripts.benchmark --seeds 0 --http-concurrency 8
 | `test_baseline.py` | 5 | 反事实基线、覆盖率钳制 |
 | `test_revision.py` | 4 | 驳回后重申请、循环上限、mock 不空转 |
 | `test_objective.py` | 12 | 三种目标函数、路线记录、多轮累计 |
-| `test_maps.py` | 11 | 地图校验、角色推导、自定义地图端到端 |
-| `test_pipeline.py` / `test_api.py` | 4 / 18 | 端到端、SSE 顺序、参数校验、地图 400/404 |
+| `test_maps.py` | 19 | 地图校验（连通/重名/坐标）、受困类型、离线决策、冲锋舟运力 |
+| `test_pipeline.py` / `test_api.py` | 4 / 19 | 端到端、SSE 顺序、参数校验、地图 400/404 |
 
 重点保护的是"看起来能跑、其实会炸"的分支：mock 模式碰不到的驳回路径、模型输出畸形、决策 Agent 回退。
 
@@ -397,7 +411,7 @@ app/
   storage.py           SQLite 存档
   static/index.html    单页前端（无构建步骤）
 scripts/               跑分（benchmark.py）与离线依赖打包
-tests/                 125 个用例
+tests/                 134 个用例
 docs/PLAN.md           两天工时拆分、演示脚本、待决事项
 ```
 
@@ -415,6 +429,6 @@ docs/PLAN.md           两天工时拆分、演示脚本、待决事项
 - 各场景冲突密度不均，食物中毒最"安静"（无孤立通道）；
 - 多轮 + 决策 Agent 组合约 20s，演示建议二选一；
 - 决策 Agent 在约束更紧的第 2 轮有约 20% 回退率；
-- 自定义地图只校验结构与语义，**不校验可行性之外的合理性**（比如把避难所画在校门外）；
+- 自定义地图只校验结构、连通性与命名，**不做语义合理性检查**（比如把避难所画在校门外）；
 - 地图接口暂无删除/覆盖，只能新增；也没有鉴权，定位是演示原型；
 - 无鉴权、无限流、无多会话隔离，定位是演示原型而非生产系统。

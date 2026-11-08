@@ -133,17 +133,3 @@ async def propose(
                     }
                 ]
         raise AgentError(str(last_error))
-
-
-async def propose_all(state: SimState, roles: list[str]) -> list[Proposal]:
-    """并发获取全部角色建议；单个角色失败时降级为空建议而不拖垮整轮。"""
-    results = await asyncio.gather(*(propose(role, state) for role in roles), return_exceptions=True)
-    proposals: list[Proposal] = []
-    for role, result in zip(roles, results):
-        if isinstance(result, BaseException):
-            proposals.append(
-                Proposal(agent=role, action="idle", target_area="", reason=f"该角色本轮未给出有效建议（{result}）")
-            )
-        else:
-            proposals.append(result[0])
-    return proposals

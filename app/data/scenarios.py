@@ -341,6 +341,8 @@ SCENARIO_PROFILES: dict[str, dict] = {
 }
 
 KIND_PRIORITY = {"residential": 0, "dense": 1, "flow": 2, "corridor": 3, "medical": 4, "shelter": 5}
+# 只有这三类区域会产生被困人员；医疗点、避难所、校门不应"被困"
+TRAPPABLE_KINDS = {"residential", "dense", "flow"}
 
 
 def _close_routes_for_demo(zones: dict[str, dict], edges: dict[str, dict], trapped_ids: list[str]) -> None:
@@ -387,7 +389,10 @@ def _build_on_map(
     rng = random.Random(seed * 991 + severity)
     zones, edges, resources = map_to_state_parts(map_spec)
 
-    candidates = sorted(zones.values(), key=lambda z: KIND_PRIORITY.get(z["kind"], 9))
+    candidates = sorted(
+        (z for z in zones.values() if z["kind"] in TRAPPABLE_KINDS),
+        key=lambda z: KIND_PRIORITY.get(z["kind"], 9),
+    )
     trapped_targets = candidates[: min(3, len(candidates))]
     for index, zone in enumerate(trapped_targets):
         base = profile["trapped_base"] * (1 - 0.25 * index)
